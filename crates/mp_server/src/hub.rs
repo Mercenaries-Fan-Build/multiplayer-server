@@ -227,11 +227,13 @@ impl Hub {
     }
 
     fn push(st: &State, to: UserId, push: Push) {
+        let kind = push_kind(&push);
         let Some(conn) = st.online.get(&to) else {
+            tracing::info!(user = to.0, push = kind, "push not delivered: user has no connection");
             return;
         };
         match conn.pushes.try_send(ServerFrame::Push { push }) {
-            Ok(()) => {}
+            Ok(()) => tracing::info!(user = to.0, conn_id = conn.conn_id, push = kind, "push queued"),
             Err(mpsc::error::TrySendError::Full(_)) => {
                 tracing::warn!(user = to.0, "outbound queue full; closing the connection");
                 conn.kill.send_replace(Some(Kill { code: CLOSE_POLICY, reason: "outbound queue overflow" }));
@@ -328,8 +330,21 @@ impl Hub {
         Ok(())
     }
 
-    /// Answers one WebSocket request from `user` on connection `conn_id`.
+    /// Answers one WebSocket request from `user` on connection `conn_id`, logging the request kind and its
+    /// outcome (pings at debug, everything else at info) so an operator can follow a session from the log.
     pub async fn handle(&self, user: &UserRef, conn_id: u64, request: Request) -> Result<Response, ApiError> {
+        let kind = request_kind(&request);
+        let result = self.handle_inner(user, conn_id, request).await;
+        let uid = user.user_id.0;
+        match (&result, kind) {
+            (Ok(_), "ping") => tracing::debug!(user = uid, conn_id, request = kind, "request answered"),
+            (Ok(rsp), _) => tracing::info!(user = uid, conn_id, request = kind, response = response_kind(rsp), "request answered"),
+            (Err(e), _) => tracing::info!(user = uid, conn_id, request = kind, code = ?e.code, error = %e.message, "request refused"),
+        }
+        result
+    }
+
+    async fn handle_inner(&self, user: &UserRef, conn_id: u64, request: Request) -> Result<Response, ApiError> {
         let uid = user.user_id;
         Self::ensure_current(&self.lock(), uid, conn_id)?;
         match request {
@@ -682,5 +697,55 @@ impl Hub {
         }
         self.db.update_stats(&entries, now_unix()).await.map_err(db_error)?;
         Ok(Response::Ok)
+    }
+}
+
+/// The wire name of a request (`ws::Request`'s serde tag), for logs.
+fn request_kind(r: &Request) -> &'static str {
+    match r {
+        Request::Ping => "ping",
+        Request::GamesList { .. } => "games_list",
+        Request::GamesGet { .. } => "games_get",
+        Request::GamesCreate(_) => "games_create",
+        Request::GamesUpdate(_) => "games_update",
+        Request::GamesClose { .. } => "games_close",
+        Request::GamesJoin { .. } => "games_join",
+        Request::JoinRespond { .. } => "join_respond",
+        Request::PlayerEntered { .. } => "player_entered",
+        Request::PlayerLeft { .. } => "player_left",
+        Request::FriendsList => "friends_list",
+        Request::FriendsAdd { .. } => "friends_add",
+        Request::FriendsRemove { .. } => "friends_remove",
+        Request::StatsGet { .. } => "stats_get",
+        Request::StatsUpdate { .. } => "stats_update",
+        Request::UsersLookup { .. } => "users_lookup",
+    }
+}
+
+/// The wire name of a push (`ws::Push`'s serde tag), for logs.
+fn push_kind(p: &Push) -> &'static str {
+    match p {
+        Push::JoinRequest { .. } => "join_request",
+        Push::JoinAccepted(_) => "join_accepted",
+        Push::JoinDenied { .. } => "join_denied",
+        Push::PlayerLeft { .. } => "player_left",
+        Push::Kicked { .. } => "kicked",
+        Push::GameRemoved { .. } => "game_removed",
+        Push::FriendsUpdated { .. } => "friends_updated",
+    }
+}
+
+/// The wire name of a response (`ws::Response`'s serde tag), for logs.
+fn response_kind(r: &Response) -> &'static str {
+    match r {
+        Response::Pong => "pong",
+        Response::Ok => "ok",
+        Response::Games(_) => "games",
+        Response::Game(_) => "game",
+        Response::GameCreated(_) => "game_created",
+        Response::JoinPending { .. } => "join_pending",
+        Response::Friends(_) => "friends",
+        Response::Stats(_) => "stats",
+        Response::Users(_) => "users",
     }
 }
