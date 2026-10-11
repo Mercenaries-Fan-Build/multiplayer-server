@@ -1,0 +1,23 @@
+# Example deployment of mp-server (ACME mode on a host with a public IP).
+# For the Traefik setup see README.md ("Behind Traefik").
+services:
+  mp-server:
+    build: .
+    image: mp-server:latest
+    restart: unless-stopped
+    ports:
+      - "443:8443/tcp"   # HTTPS: REST + WebSocket
+      - "80:8080/tcp"    # ACME HTTP-01 challenges (acme mode only)
+      - "3659:3659/udp"  # DTLS relay (must match relay.public_port)
+    volumes:
+      # Database and ACME account/certificate live here.
+      - mp-data:/data
+      # The configuration file (required). Start from config.example.toml.
+      - ./config.toml:/etc/mp-server/config.toml:ro
+      # Relay DTLS certificate + key (self-signed is fine; see README.md).
+      - ./relay:/etc/mp-server/relay:ro
+      # proxied mode only: the HTTPS certificate + key Traefik sees on its backend hop.
+      # - ./https:/etc/mp-server/https:ro
+
+volumes:
+  mp-data:

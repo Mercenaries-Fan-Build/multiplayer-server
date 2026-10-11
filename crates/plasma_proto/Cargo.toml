@@ -1,0 +1,10 @@
+[package]
+name = "plasma_proto"
+version = "0.1.0"
+description = "Wire codec for the Mercenaries 2 FESL / Theater (EA Plasma) protocol, mirrored from the game client"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+thiserror.workspace = true

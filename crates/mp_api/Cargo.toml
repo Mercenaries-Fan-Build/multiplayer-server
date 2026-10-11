@@ -1,0 +1,11 @@
+[package]
+name = "mp_api"
+version = "0.1.0"
+description = "Versioned control-plane API between the Mercenaries 2 multiplayer ASI and the multiplayer server"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

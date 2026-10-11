@@ -1,0 +1,40 @@
+[package]
+name = "mp_server"
+version = "0.1.0"
+description = "Mercenaries 2 multiplayer server: accounts, lobby WebSocket, DTLS relay"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mp-server"
+path = "src/main.rs"
+
+[dependencies]
+mp_api = { path = "../mp_api" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1", "service"] }
+tower = "0.5"
+openssl = "0.10"
+openssl-sys = "0.9"
+tokio-openssl = "0.6"
+instant-acme = { version = "0.8", default-features = false, features = ["ring"] }
+foreign-types = "0.3"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+argon2 = "0.5"
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+ipnet = { version = "2", features = ["serde"] }
+http = "1"
+bytes = "1"
+futures-util = "0.3"
+
+[dev-dependencies]
+tokio-tungstenite = "0.29"
+tempfile = "3"
+http-body-util = "0.1"

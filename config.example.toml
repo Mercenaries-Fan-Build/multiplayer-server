@@ -1,0 +1,92 @@
+# mp-server configuration. Every key is required; unknown keys are rejected at startup.
+# Paths below match the container layout (/data volume, config mounted at /etc/mp-server/config.toml).
+
+[log]
+# tracing EnvFilter directive.
+filter = "info"
+# "json" (one object per line, for log shippers) or "text".
+format = "json"
+
+[server]
+# HTTPS (REST + WebSocket). The container image listens on 8443; publish it as 443.
+https_listen = "0.0.0.0:8443"
+tls_handshake_timeout_secs = 10
+
+[database]
+# SQLite file; its directory must exist and be writable.
+path = "/data/mp.sqlite"
+
+[accounts]
+# Session token lifetime (POST /v1/sessions).
+session_ttl_secs = 604800
+# argon2id cost. 19456 KiB / 2 iterations / 1 lane is the OWASP baseline.
+argon2_memory_kib = 19456
+argon2_iterations = 2
+argon2_parallelism = 1
+
+[rate_limit]
+# Token buckets per client IP.
+accounts = { burst = 5, refill_per_minute = 5 }
+sessions = { burst = 10, refill_per_minute = 20 }
+
+[websocket]
+max_message_bytes = 65536
+# Frames queued for one client before the server closes it as too slow.
+outbound_queue = 256
+ping_interval_secs = 20
+idle_timeout_secs = 60
+
+[games]
+# Highest max_players a host may ask for (1-254). Keep it at 2 for the current multiplayer_restored ASI: it links
+# only host<->joiner and has no joiner<->joiner relay mesh, so its host refuses a second joiner and its joiner
+# refuses a game reporting more than 2 players. Raise it only for clients with joiner-to-joiner mesh support.
+max_players_limit = 2
+
+[relay]
+# UDP DTLS relay. Publish the same port; clients are told public_host:public_port.
+listen = "0.0.0.0:3659"
+public_host = "mp.example.com"
+public_port = 3659
+# Self-signed is fine: clients pin the certificate's sha256, which the server sends them.
+#   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+#     -keyout relay/key.pem -out relay/cert.pem -days 3650 -subj /CN=mp-relay
+# compose.yaml mounts ./relay at /etc/mp-server/relay.
+cert_pem = "/etc/mp-server/relay/cert.pem"
+key_pem = "/etc/mp-server/relay/key.pem"
+idle_timeout_secs = 60
+handshake_timeout_secs = 10
+max_pending_handshakes = 1024
+mtu = 1200
+tick_millis = 250
+
+# ---------------------------------------------------------------------------------------------------------
+# TLS: exactly one [tls] table, `mode` = "acme" or "proxied". There is no default.
+# ---------------------------------------------------------------------------------------------------------
+
+# Mode 1 — the server gets its own Let's Encrypt certificate (HTTP-01 on port 80).
+[tls]
+mode = "acme"
+domains = ["mp.example.com"]
+contact_email = "ops@example.com"
+# Let's Encrypt production: https://acme-v02.api.letsencrypt.org/directory
+# Let's Encrypt staging:    https://acme-staging-v02.api.letsencrypt.org/directory  (try this first)
+directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
+# Roots for the ACME directory's own HTTPS: "system", or a PEM file (e.g. Pebble's test root).
+directory_ca = "system"
+cache_dir = "/data/acme"
+# The container image listens on 8080; publish it as 80.
+http_listen = "0.0.0.0:8080"
+renew_before_days = 30
+retry_interval_secs = 3600
+
+# Mode 2 — behind a reverse proxy (Traefik) that holds the public certificate. Replace the [tls] table
+# above with this one.
+#
+# [tls]
+# mode = "proxied"
+# # Certificate the proxy sees on its backend hop; self-signed is fine with insecureSkipVerify.
+# cert_pem = "/etc/mp-server/https/cert.pem"
+# key_pem = "/etc/mp-server/https/key.pem"
+# # Only requests from these peers have X-Forwarded-For honoured (and must carry it). Use the proxy's
+# # network, e.g. the Docker network subnet Traefik reaches the server on.
+# trusted_proxies = ["172.16.0.0/12"]
