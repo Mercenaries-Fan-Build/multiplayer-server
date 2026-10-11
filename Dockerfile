@@ -1,8 +1,8 @@
 # Multiplayer server image: builds `mp-server` in release mode and runs it as an unprivileged user.
 #
 #   docker build -t mp-server .
-#   docker run --rm -v $PWD/config.toml:/etc/mp-server/config.toml:ro -v mp-data:/data \
-#       -p 443:8443 -p 80:8080 -p 3659:3659/udp mp-server
+#   docker run --rm -v $PWD/config.toml:/etc/mp-server/config.toml:ro -v $PWD/relay:/etc/mp-server/relay:ro \
+#       -v mp-data:/data -p 443:8443 -p 80:8080 -p 3659:3659/udp mp-server
 #
 # The container listens on unprivileged ports (8443 HTTPS, 8080 ACME HTTP-01, 3659/udp relay); map them to the
 # public ports with -p / compose. Persistent state (SQLite database, ACME account + certificate) lives in /data.

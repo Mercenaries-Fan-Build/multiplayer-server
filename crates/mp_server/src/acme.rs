@@ -165,6 +165,22 @@ fn cache_paths(cfg: &AcmeConfig) -> CachePaths {
     }
 }
 
+/// Create `cache_dir` (and missing parents) owner-only, or accept it when it already is a directory. Runs
+/// before any ACME request, so an unwritable cache fails start-up before an account is registered that could
+/// never be saved.
+fn ensure_cache_dir(dir: &Path) -> Result<(), AcmeError> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(io_err(dir))?;
+    let meta = std::fs::metadata(dir).map_err(io_err(dir))?;
+    if !meta.is_dir() {
+        return Err(AcmeError::Io {
+            path: dir.to_path_buf(),
+            source: std::io::Error::other("cache_dir exists but is not a directory"),
+        });
+    }
+    Ok(())
+}
+
 fn write_private(path: &Path, data: &[u8]) -> Result<(), AcmeError> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -299,6 +315,7 @@ fn renew_window(cfg: &AcmeConfig) -> i64 {
 /// The certificate to start with: the cached one if it covers the domains and is outside the renewal
 /// window, otherwise a freshly issued one.
 pub async fn initial_certificate(cfg: &AcmeConfig, challenges: &Challenges) -> Result<(Vec<X509>, PKey<Private>), AcmeError> {
+    ensure_cache_dir(&cfg.cache_dir)?;
     let paths = cache_paths(cfg);
     if paths.cert.exists() {
         let (chain, key) = load_pem(&paths.cert, &paths.key)?;
@@ -350,5 +367,33 @@ pub async fn renewal_loop(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_dir_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn missing_cache_dir_is_created_owner_only() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("data").join("acme");
+        ensure_cache_dir(&dir).unwrap();
+        let meta = std::fs::metadata(&dir).unwrap();
+        assert!(meta.is_dir());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+        // A second start finds it in place.
+        ensure_cache_dir(&dir).unwrap();
+        // And the cache writer can now write into it.
+        write_private(&dir.join("probe.json"), b"{}").unwrap();
+    }
+
+    #[test]
+    fn cache_dir_that_is_a_file_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("acme");
+        std::fs::write(&file, b"").unwrap();
+        assert!(matches!(ensure_cache_dir(&file), Err(AcmeError::Io { .. })));
     }
 }
