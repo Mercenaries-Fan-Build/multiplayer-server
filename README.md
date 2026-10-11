@@ -1,7 +1,7 @@
 # mp-server — Mercenaries 2 multiplayer server
 
 The server half of the multiplayer rewrite. The game-side ASI terminates FESL/Theater locally and talks to this
-server through the `mp_api` contract (`crates/mp_api`):
+server through the `mercs2_mp_api` contract (`crates/mercs2_mp_api`):
 
 | Endpoint | Transport | Purpose |
 |---|---|---|
@@ -12,7 +12,7 @@ server through the `mp_api` contract (`crates/mp_api`):
 
 Games live in memory only; accounts, sessions, friends and stats live in SQLite (`database.path`).
 
-Game privacy uses room keys (`mp_api::ws::Privacy`). A host may set an optional `room_key` (6–32 ASCII letters,
+Game privacy uses room keys (`mercs2_mp_api::ws::Privacy`). A host may set an optional `room_key` (6–32 ASCII letters,
 digits or `-`, compared case-sensitively); keys are not unique, so any number of live games may share one. A client
 listing, fetching or joining games presents its own optional `room_key` and reaches only games hosted with exactly
 that key — or, without a key, only keyless games. A keyed game asked for with the wrong or no key answers
@@ -176,7 +176,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 docker build -t mp-server .
 ```
 
-The integration tests (`crates/mp_server/tests/server.rs`) start the server in-process in `proxied` mode on
+The integration tests (`crates/mercs2_mp_server/tests/server.rs`) start the server in-process in `proxied` mode on
 ephemeral ports with freshly generated self-signed certificates and drive REST, WebSocket and the DTLS relay.
 
 ACME against a local test CA: run [Pebble](https://github.com/letsencrypt/pebble)

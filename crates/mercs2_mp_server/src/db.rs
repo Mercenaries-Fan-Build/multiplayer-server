@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use mp_api::UserId;
-use mp_api::ws::{StatValue, UserRef};
+use mercs2_mp_api::UserId;
+use mercs2_mp_api::ws::{StatValue, UserRef};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
 

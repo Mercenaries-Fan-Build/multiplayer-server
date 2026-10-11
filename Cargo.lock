@@ -1098,6 +1098,55 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "mercs2_mp_api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "mercs2_mp_server"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "axum",
+ "bytes",
+ "foreign-types",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "instant-acme",
+ "ipnet",
+ "mercs2_mp_api",
+ "openssl",
+ "openssl-sys",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-openssl",
+ "tokio-tungstenite",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "mercs2_plasma_proto"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "thiserror",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1118,47 +1167,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mp_api"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "mp_server"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "axum",
- "bytes",
- "foreign-types",
- "futures-util",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "instant-acme",
- "ipnet",
- "mp_api",
- "openssl",
- "openssl-sys",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-openssl",
- "tokio-tungstenite",
- "toml",
- "tower",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1402,14 +1410,6 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
-
-[[package]]
-name = "plasma_proto"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "thiserror",
-]
 
 [[package]]
 name = "potential_utf"

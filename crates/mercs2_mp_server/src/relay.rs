@@ -1,4 +1,4 @@
-//! UDP relay terminating one DTLS 1.2 association per client (`mp_api::relay` wire format inside).
+//! UDP relay terminating one DTLS 1.2 association per client (`mercs2_mp_api::relay` wire format inside).
 //!
 //! One tokio `UdpSocket` serves every client. Datagrams are demultiplexed by source address into a
 //! per-association OpenSSL `SslStream` over an in-memory datagram queue ([`DgramIo`]): inbound datagrams are
@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use foreign_types::ForeignTypeRef;
-use mp_api::relay::{Datagram, RelayWireError};
-use mp_api::{GameId, UserId};
+use mercs2_mp_api::relay::{Datagram, RelayWireError};
+use mercs2_mp_api::{GameId, UserId};
 use openssl::error::ErrorStack;
 use openssl::ex_data::Index;
 use openssl::hash::MessageDigest;

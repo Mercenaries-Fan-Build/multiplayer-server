@@ -1,5 +1,5 @@
 //! Mercenaries 2 multiplayer server: accounts and sessions over HTTPS, the lobby over one WebSocket, and a
-//! DTLS relay for gameplay datagrams. The wire contract is the `mp_api` crate.
+//! DTLS relay for gameplay datagrams. The wire contract is the `mercs2_mp_api` crate.
 
 pub mod acme;
 pub mod api;

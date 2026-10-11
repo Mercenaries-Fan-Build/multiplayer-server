@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mp_server::config::{Config, LogFormat};
+use mercs2_mp_server::config::{Config, LogFormat};
 use tracing_subscriber::EnvFilter;
 
 fn config_path() -> Result<PathBuf, String> {
@@ -42,7 +42,7 @@ async fn main() -> ExitCode {
         LogFormat::Text => tracing_subscriber::fmt().with_env_filter(filter).init(),
     }
 
-    let running = match mp_server::start(config).await {
+    let running = match mercs2_mp_server::start(config).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "startup failed");

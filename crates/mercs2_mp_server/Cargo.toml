@@ -1,16 +1,18 @@
 [package]
-name = "mp_server"
+name = "mercs2_mp_server"
 version = "0.1.0"
 description = "Mercenaries 2 multiplayer server: accounts, lobby WebSocket, DTLS relay"
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "mp-server"
 path = "src/main.rs"
 
 [dependencies]
-mp_api = { path = "../mp_api" }
+mercs2_mp_api = { path = "../mercs2_mp_api", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

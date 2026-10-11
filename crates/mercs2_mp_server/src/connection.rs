@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use mp_api::ws::{ClientFrame, ServerFrame};
-use mp_api::{ApiError, ErrorCode};
+use mercs2_mp_api::ws::{ClientFrame, ServerFrame};
+use mercs2_mp_api::{ApiError, ErrorCode};
 use tokio::sync::{mpsc, watch};
 
 use crate::api::App;

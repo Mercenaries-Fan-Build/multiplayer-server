@@ -39,7 +39,7 @@ pub struct Config {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogConfig {
-    /// `tracing_subscriber::EnvFilter` directive, e.g. `"info"` or `"mp_server=debug,info"`.
+    /// `tracing_subscriber::EnvFilter` directive, e.g. `"info"` or `"mercs2_mp_server=debug,info"`.
     pub filter: String,
     /// `"json"` (one JSON object per line) or `"text"`.
     pub format: LogFormat,
@@ -399,7 +399,7 @@ retry_interval_secs = 3600
 
     #[test]
     fn example_config_parses_in_both_modes() {
-        let example = include_str!("../../../config.example.toml");
+        let example = include_str!("../config.example.toml");
         let acme = Config::parse(Path::new("config.example.toml"), example).unwrap();
         assert!(matches!(acme.tls, TlsConfig::Acme(_)));
         let (base, rest) = example.split_once("[tls]\nmode = \"acme\"").unwrap();

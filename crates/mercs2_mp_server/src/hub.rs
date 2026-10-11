@@ -1,15 +1,15 @@
 //! The lobby: online connections, the in-memory game model (games are ephemeral), and every WebSocket
-//! request from `mp_api::ws`. Friends and stats live in SQLite; everything else here lives only as long as
+//! request from `mercs2_mp_api::ws`. Friends and stats live in SQLite; everything else here lives only as long as
 //! the server process.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 
-use mp_api::ws::{
+use mercs2_mp_api::ws::{
     CreateGame, Friend, FriendOp, GameCreated, GameDetail, GameSummary, JoinAccepted, JoinDenyReason, Joinability,
     PlayerInfo, Privacy, Push, RelayAssignment, Request, Response, ServerFrame, StatValue, UpdateGame, UserRef,
 };
-use mp_api::{ApiError, ErrorCode, GameId, UserId, rules};
+use mercs2_mp_api::{ApiError, ErrorCode, GameId, UserId, rules};
 use tokio::sync::{mpsc, watch};
 
 use crate::db::{Db, DbError};

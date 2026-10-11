@@ -6,12 +6,12 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use common::*;
-use mp_api::relay::{Channel, Datagram};
-use mp_api::ws::{
+use mercs2_mp_api::relay::{Channel, Datagram};
+use mercs2_mp_api::ws::{
     CreateGame, FriendOp, GameCreated, GameSummary, JoinDenyReason, Joinability, Privacy, Push, Request, Response,
     StatValue, UpdateGame,
 };
-use mp_api::{ErrorCode, GameId, UserId, rules};
+use mercs2_mp_api::{ErrorCode, GameId, UserId, rules};
 use openssl::ssl::ErrorCode as SslErrorCode;
 
 fn create(name: &str, privacy: Privacy) -> Request {
@@ -90,7 +90,7 @@ async fn sessions_200_401_same_error_for_unknown_user() {
 #[tokio::test(flavor = "multi_thread")]
 async fn rate_limit_is_per_forwarded_client_ip() {
     let s = TestServer::start_with(|c| {
-        c.rate_limit.accounts = mp_server::config::BucketConfig { burst: 2, refill_per_minute: 1 };
+        c.rate_limit.accounts = mercs2_mp_server::config::BucketConfig { burst: 2, refill_per_minute: 1 };
     })
     .await;
     let body = |n: &str| format!(r#"{{"username":"{n}","password":"long-enough"}}"#);
@@ -116,7 +116,7 @@ async fn websocket_requires_a_valid_bearer_token() {
     for auth in [None, Some("Bearer nope"), Some("Basic abc")] {
         let Err((status, body)) = s.ws_raw(auth).await else { panic!("upgrade accepted with {auth:?}") };
         assert_eq!(status, 401);
-        let err: mp_api::ApiError = serde_json::from_str(&body).unwrap();
+        let err: mercs2_mp_api::ApiError = serde_json::from_str(&body).unwrap();
         assert_eq!(err.code, ErrorCode::Unauthorized);
     }
     let (mut ws, _) = s.user("Valid").await;
@@ -513,7 +513,7 @@ async fn unsupported_and_garbage_frames() {
     let (mut ws, _) = s.user("Probe").await;
     ws.send_text(r#"{"id":41,"type":"drop_tables"}"#).await;
     match ws.next_frame().await.unwrap() {
-        mp_api::ws::ServerFrame::Error { id, error } => {
+        mercs2_mp_api::ws::ServerFrame::Error { id, error } => {
             assert_eq!(id, 41);
             assert_eq!(error.code, ErrorCode::Unsupported);
         }

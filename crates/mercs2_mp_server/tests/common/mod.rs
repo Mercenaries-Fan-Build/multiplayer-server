@@ -12,9 +12,9 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper_util::rt::TokioIo;
-use mp_api::ws::{ClientFrame, Push, Request, Response, ServerFrame};
-use mp_api::ApiError;
-use mp_server::config::*;
+use mercs2_mp_api::ws::{ClientFrame, Push, Request, Response, ServerFrame};
+use mercs2_mp_api::ApiError;
+use mercs2_mp_server::config::*;
 use openssl::asn1::Asn1Time;
 use openssl::bn::{BigNum, MsbOption};
 use openssl::ec::{EcGroup, EcKey};
@@ -66,10 +66,10 @@ pub fn sha256_hex_of_pem(path: &Path) -> String {
 pub struct TestServer {
     pub https: SocketAddr,
     pub relay_addr: SocketAddr,
-    pub relay: mp_server::relay::RelayHandle,
+    pub relay: mercs2_mp_server::relay::RelayHandle,
     pub https_cert: PathBuf,
     pub relay_fingerprint: String,
-    _running: mp_server::Running,
+    _running: mercs2_mp_server::Running,
     _dir: tempfile::TempDir,
 }
 
@@ -134,7 +134,7 @@ impl TestServer {
             TlsConfig::Acme(_) => unreachable!("tests run proxied mode"),
         };
         let relay_fingerprint = sha256_hex_of_pem(&cfg.relay.cert_pem);
-        let running = mp_server::start(cfg).await.unwrap();
+        let running = mercs2_mp_server::start(cfg).await.unwrap();
         TestServer {
             https: running.https_addr,
             relay_addr: running.relay_addr,

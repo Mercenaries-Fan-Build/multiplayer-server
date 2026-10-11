@@ -1,6 +1,6 @@
 //! Control-plane API (v1) between the multiplayer ASI and the multiplayer server.
 //!
-//! The ASI terminates the game's FESL / Theater protocol locally (see `plasma_proto` and
+//! The ASI terminates the game's FESL / Theater protocol locally (see `mercs2_plasma_proto` and
 //! `docs/reverse_engineer/multiplayer_txn_catalogue.md`) and talks to the server only through this API:
 //!
 //! * [`rest`] — `POST /v1/accounts` and `POST /v1/sessions` (JSON over HTTPS).

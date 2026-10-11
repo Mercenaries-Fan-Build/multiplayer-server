@@ -11,7 +11,7 @@ FROM rust:1.94.1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN cargo build --release --locked -p mp_server
+RUN cargo build --release --locked -p mercs2_mp_server
 
 FROM debian:bookworm-slim
 RUN apt-get update \

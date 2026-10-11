@@ -11,8 +11,8 @@ use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use mp_api::rest::{AccountCreated, CreateAccount, CreateSession, SessionCreated};
-use mp_api::{ApiError, ErrorCode, rules};
+use mercs2_mp_api::rest::{AccountCreated, CreateAccount, CreateSession, SessionCreated};
+use mercs2_mp_api::{ApiError, ErrorCode, rules};
 use serde::de::DeserializeOwned;
 
 use crate::client_ip::ClientIpPolicy;
@@ -60,7 +60,7 @@ pub fn status_of(code: ErrorCode) -> StatusCode {
     }
 }
 
-/// An error response: HTTP status plus the `mp_api::ApiError` JSON body.
+/// An error response: HTTP status plus the `mercs2_mp_api::ApiError` JSON body.
 pub struct HttpError(StatusCode, ApiError);
 
 impl IntoResponse for HttpError {
