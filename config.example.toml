@@ -28,6 +28,9 @@ argon2_parallelism = 1
 # Token buckets per client IP.
 accounts = { burst = 5, refill_per_minute = 5 }
 sessions = { burst = 10, refill_per_minute = 20 }
+# GET /v1/sessions/current. A service verifying players' tokens (e.g. a leaderboard site) calls from one IP,
+# so this bucket is shared by every player it verifies; size it for that service's traffic.
+current_session = { burst = 60, refill_per_minute = 120 }
 
 [websocket]
 max_message_bytes = 65536
