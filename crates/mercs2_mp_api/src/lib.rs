@@ -3,7 +3,7 @@
 //! The ASI terminates the game's FESL / Theater protocol locally (see `mercs2_plasma_proto` and
 //! `docs/reverse_engineer/multiplayer_txn_catalogue.md`) and talks to the server only through this API:
 //!
-//! * [`rest`] — `POST /v1/accounts` and `POST /v1/sessions` (JSON over HTTPS).
+//! * [`rest`] — `POST /v1/accounts`, `POST /v1/sessions` and `GET /v1/sessions/current` (JSON over HTTPS).
 //! * [`ws`] — one authenticated WebSocket at `GET /v1/ws` carrying every other request and all server pushes.
 //! * [`relay`] — the datagram format inside each client's DTLS association with the relay.
 //! * [`rules`] — field limits, most of them taken from the game client's own buffer sizes.
