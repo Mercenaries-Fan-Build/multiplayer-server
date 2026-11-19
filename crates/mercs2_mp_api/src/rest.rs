@@ -39,11 +39,43 @@ pub struct CreateSession {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionCreated {
-    /// Bearer token for `GET /v1/ws`. Opaque to the client.
+    /// Bearer token for `GET /v1/ws` and `GET /v1/sessions/current`. Opaque to the client.
     pub token: String,
     pub user_id: UserId,
     /// Canonical spelling of the username (becomes the game's `displayName`).
     pub display_name: String,
     /// Unix seconds.
     pub expires_at: i64,
+}
+
+/// `GET /v1/sessions/current` with `Authorization: Bearer <token>` (the [`SessionCreated::token`]); no body.
+/// Names the account a session token belongs to, for services that verify a player's token. Read-only: the
+/// session's expiry and state are unchanged. 200 on success; 401 `unauthorized` when the header is missing or
+/// malformed, or the token is unknown or expired.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentSession {
+    /// The account's server-assigned id ([`AccountCreated::user_id`], [`SessionCreated::user_id`]).
+    pub account_id: UserId,
+    /// Canonical spelling of the account's username.
+    pub username: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_session_wire_shape() {
+        let s = CurrentSession { account_id: UserId(5), username: "Chris".into() };
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(json, r#"{"account_id":5,"username":"Chris"}"#);
+        assert_eq!(serde_json::from_str::<CurrentSession>(&json).unwrap(), s);
+    }
+
+    #[test]
+    fn current_session_requires_both_fields() {
+        assert!(serde_json::from_str::<CurrentSession>(r#"{"account_id":5}"#).is_err());
+        assert!(serde_json::from_str::<CurrentSession>(r#"{"username":"Chris"}"#).is_err());
+        assert!(serde_json::from_str::<CurrentSession>(r#"{"account_id":"5","username":"Chris"}"#).is_err());
+    }
 }
