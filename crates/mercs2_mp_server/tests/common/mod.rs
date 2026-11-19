@@ -175,6 +175,22 @@ impl TestServer {
         (status, json)
     }
 
+    /// GET with the given Authorization header value (raw, scheme included).
+    pub async fn get(&self, path: &str, authorization: Option<&str>) -> (u16, serde_json::Value) {
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(self.tls().await)).await.unwrap();
+        tokio::spawn(conn);
+        let mut req = http::Request::get(path).header("host", "localhost");
+        if let Some(a) = authorization {
+            req = req.header("authorization", a);
+        }
+        let req = req.body(Full::new(Bytes::new())).unwrap();
+        let rsp = sender.send_request(req).await.unwrap();
+        let status = rsp.status().as_u16();
+        let bytes = rsp.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("non-JSON body {bytes:?}: {e}"));
+        (status, json)
+    }
+
     pub async fn create_account(&self, name: &str) -> i64 {
         let (status, body) = self
             .post("/v1/accounts", &format!(r#"{{"username":"{name}","password":"password-{name}"}}"#), Some("198.51.100.1"))
