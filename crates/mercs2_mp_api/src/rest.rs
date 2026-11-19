@@ -29,7 +29,7 @@ pub struct ClientInfo {
 }
 
 /// `POST /v1/sessions` — from the game's `acct Login` (`name` + `password`).
-/// 200 on success, with `Cache-Control: no-store`; 401 `bad_credentials`; 422 `invalid_field`; 429 `rate_limited`.
+/// 200 on success, with `Cache-Control: no-store`; 400 `bad_credentials`; 422 `invalid_field`; 429 `rate_limited`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSession {
     pub username: String,
