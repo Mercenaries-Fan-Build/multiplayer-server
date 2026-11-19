@@ -3,6 +3,7 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use common::*;
@@ -98,14 +99,15 @@ async fn current_session_names_the_tokens_account() {
     assert_eq!(status, 200, "{login}");
     let token = login["token"].as_str().unwrap();
 
-    let (status, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {token}"))).await;
+    let (status, headers, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {token}")), Some("198.51.100.1")).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body, serde_json::json!({"account_id": chris, "username": "Chris"}), "registered spelling, nothing else");
+    assert_eq!(headers.get("cache-control").map(|v| v.to_str().unwrap()), Some("no-store"), "{headers:?}");
     let typed: mercs2_mp_api::rest::CurrentSession = serde_json::from_value(body).unwrap();
     assert_eq!(typed.account_id, UserId(chris));
 
     let (other_token, _) = s.login("Other").await;
-    let (status, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {other_token}"))).await;
+    let (status, _, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {other_token}")), Some("198.51.100.1")).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body, serde_json::json!({"account_id": other, "username": "Other"}));
 }
@@ -116,12 +118,96 @@ async fn current_session_401_for_missing_malformed_or_unknown_token() {
     s.create_account("Valid").await;
     let (token, _) = s.login("Valid").await;
     let lowercase_scheme = format!("bearer {token}");
-    for auth in [None, Some("Bearer nope"), Some("Basic abc"), Some("Bearer "), Some(lowercase_scheme.as_str()), Some(token.as_str())] {
-        let (status, body) = s.get("/v1/sessions/current", auth).await;
-        assert_eq!(status, 401, "{auth:?}: {body}");
-        assert!(body["message"].is_string(), "{auth:?}: {body}");
-        assert_eq!(body["code"], "unauthorized", "{auth:?}: {body}");
+    // RFC 6750 section 3: a request with no bearer token gets a bare challenge; a rejected token gets invalid_token.
+    let no_token = "Bearer";
+    let invalid_token = r#"Bearer error="invalid_token""#;
+    let cases = [
+        (None, no_token),
+        (Some("Bearer nope"), invalid_token),
+        (Some("Basic abc"), no_token),
+        (Some("Bearer "), no_token),
+        (Some(lowercase_scheme.as_str()), no_token),
+        (Some(token.as_str()), no_token),
+    ];
+    for path in ["/v1/sessions/current", "/v1/ws"] {
+        for (auth, challenge) in cases {
+            let (status, headers, body) = s.get(path, auth, Some("198.51.100.1")).await;
+            assert_eq!(status, 401, "{path} {auth:?}: {body}");
+            assert!(body["message"].is_string(), "{path} {auth:?}: {body}");
+            assert_eq!(body["code"], "unauthorized", "{path} {auth:?}: {body}");
+            let www: Vec<&str> = headers.get_all("www-authenticate").iter().map(|v| v.to_str().unwrap()).collect();
+            assert_eq!(www, [challenge], "{path} {auth:?}");
+        }
     }
+}
+
+/// Everything this test binary logs from the moment the first caller installs it, at every level.
+fn captured_log() -> Arc<Mutex<Vec<u8>>> {
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Capture {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    static LOG: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+    LOG.get_or_init(|| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let writer = buf.clone();
+        tracing_subscriber::fmt()
+            .with_env_filter("trace")
+            .with_ansi(false)
+            .with_writer(move || Capture(writer.clone()))
+            .init();
+        buf
+    })
+    .clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_session_logs_each_outcome_and_never_the_token() {
+    let log = captured_log();
+    let s = TestServer::start().await;
+    let id = s.create_account("Logged").await;
+    let (token, _) = s.login("Logged").await;
+    let unknown = "0f1e2d3c4b5a6978".repeat(4);
+    let ip = Some("198.51.100.1");
+    assert_eq!(s.get("/v1/sessions/current", Some(&format!("Bearer {token}")), ip).await.0, 200);
+    assert_eq!(s.get("/v1/sessions/current", Some(&format!("Bearer {unknown}")), ip).await.0, 401);
+    assert_eq!(s.get("/v1/sessions/current", None, ip).await.0, 401);
+
+    let text = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    assert!(text.contains(&format!("session verified user={id}")), "{text}");
+    assert!(
+        text.contains("session verification refused code=Unauthorized error=session token unknown or expired"),
+        "{text}"
+    );
+    assert!(
+        text.contains("session verification refused code=Unauthorized error=Authorization: Bearer <session token> required"),
+        "{text}"
+    );
+    for secret in [&token, &unknown] {
+        assert!(!text.contains(&secret[..8]), "token prefix {} is in the log", &secret[..8]);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_session_500_body_names_no_internal_detail() {
+    let s = TestServer::start().await;
+    s.create_account("Broken").await;
+    let (token, _) = s.login("Broken").await;
+    // Take the sessions table away behind the server's back so its session lookup fails inside SQLite.
+    let mut conn = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!("sqlite://{}", s.db_path.display()))
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE sessions RENAME TO sessions_moved").execute(&mut conn).await.unwrap();
+
+    let (status, _, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {token}")), Some("198.51.100.1")).await;
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(body, serde_json::json!({"code": "internal", "message": "internal error"}));
 }
 
 /// Polls the wall clock (whole unix seconds, as the server stores session expiry) until it reaches `t`.
@@ -149,11 +235,11 @@ async fn current_session_does_not_extend_the_session_and_401s_once_expired() {
 
     // One second after login: still valid. Had this call extended the session, it would outlive `expires_at`.
     wait_until_unix(expires_at - 1).await;
-    let (status, body) = s.get("/v1/sessions/current", Some(&auth)).await;
+    let (status, _, body) = s.get("/v1/sessions/current", Some(&auth), Some("198.51.100.1")).await;
     assert_eq!(status, 200, "{body}");
 
     wait_until_unix(expires_at).await;
-    let (status, body) = s.get("/v1/sessions/current", Some(&auth)).await;
+    let (status, _, body) = s.get("/v1/sessions/current", Some(&auth), Some("198.51.100.1")).await;
     assert_eq!(status, 401, "expired at {expires_at}: {body}");
     assert_eq!(body["code"], "unauthorized");
     let Err((status, _)) = s.ws_raw(Some(&auth)).await else { panic!("websocket accepted an expired token") };
@@ -173,6 +259,26 @@ async fn rate_limit_is_per_forwarded_client_ip() {
     assert_eq!(status, 429);
     assert_eq!(b["code"], "rate_limited");
     assert_eq!(s.post("/v1/accounts", &body("ddd"), Some("203.0.113.2")).await.0, 201, "other client unaffected");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_session_rate_limit_is_per_forwarded_client_ip() {
+    let s = TestServer::start_with(|c| {
+        c.rate_limit.current_session = mercs2_mp_server::config::BucketConfig { burst: 2, refill_per_minute: 1 };
+    })
+    .await;
+    s.create_account("Limited").await;
+    let (token, _) = s.login("Limited").await;
+    let auth = format!("Bearer {token}");
+    let ip = Some("203.0.113.1");
+    // A rejected token spends from the bucket too, so guessing tokens is throttled.
+    assert_eq!(s.get("/v1/sessions/current", Some("Bearer nope"), ip).await.0, 401);
+    assert_eq!(s.get("/v1/sessions/current", Some(&auth), ip).await.0, 200);
+    let (status, _, body) = s.get("/v1/sessions/current", Some(&auth), ip).await;
+    assert_eq!(status, 429, "{body}");
+    assert_eq!(body["code"], "rate_limited");
+    let (status, _, body) = s.get("/v1/sessions/current", Some(&auth), Some("203.0.113.2")).await;
+    assert_eq!(status, 200, "other client unaffected: {body}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
