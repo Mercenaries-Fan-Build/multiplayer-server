@@ -1,22 +1,51 @@
-//! `mp-server --config <path>`
+//! `mp-server --config <path>` runs the server; `mp-server --config <path> <subcommand> …` runs one leaderboard
+//! moderation command ([`mercs2_mp_server::admin`]) against the configured database and exits.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use mercs2_mp_server::admin::{self, AdminError};
 use mercs2_mp_server::config::{Config, LogFormat};
+use mercs2_mp_server::db::Db;
+use mercs2_mp_server::util::now_unix;
 use tracing_subscriber::EnvFilter;
 
-fn config_path() -> Result<PathBuf, String> {
+fn parse_args() -> Result<(PathBuf, Option<admin::Command>), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
-        [flag, path] if flag == "--config" => Ok(PathBuf::from(path)),
-        _ => Err("usage: mp-server --config <path to config.toml>".into()),
+        [flag, path] if flag == "--config" => Ok((PathBuf::from(path), None)),
+        [flag, path, rest @ ..] if flag == "--config" => Ok((PathBuf::from(path), Some(admin::Command::parse(rest)?))),
+        _ => Err(admin::USAGE.into()),
+    }
+}
+
+async fn run_admin(config: &Config, command: admin::Command) -> ExitCode {
+    let db = match Db::open(&config.database.path).await {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("mp-server: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match admin::run(&db, command, now_unix()).await {
+        Ok(done) => {
+            println!("{done}");
+            ExitCode::SUCCESS
+        }
+        Err(AdminError::Refused(why)) => {
+            eprintln!("{why}");
+            ExitCode::FAILURE
+        }
+        Err(AdminError::Db(e)) => {
+            eprintln!("mp-server: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let path = match config_path() {
+    let (path, command) = match parse_args() {
         Ok(p) => p,
         Err(usage) => {
             eprintln!("{usage}");
@@ -30,6 +59,9 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Some(command) = command {
+        return run_admin(&config, command).await;
+    }
     let filter = match EnvFilter::try_new(&config.log.filter) {
         Ok(f) => f,
         Err(e) => {
