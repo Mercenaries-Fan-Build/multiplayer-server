@@ -12,8 +12,9 @@ use mercs2_mp_api::ws::{
 use mercs2_mp_api::{ApiError, ErrorCode, GameId, UserId, rules};
 use tokio::sync::{mpsc, watch};
 
+use crate::api::INTERNAL_ERROR_MESSAGE;
 use crate::db::{Db, DbError};
-use crate::relay::{Binding, RelayHandle};
+use crate::relay::{Binding, RelayGone, RelayHandle};
 use crate::util::{hex, now_unix, random_alnum, random_bytes, random_uuid};
 
 /// WebSocket close code and reason a connection is told to close with.
@@ -150,14 +151,24 @@ fn api(code: ErrorCode, message: impl Into<String>) -> ApiError {
     ApiError::new(code, message)
 }
 
+/// The client gets [`INTERNAL_ERROR_MESSAGE`]; each caller logs the detail first.
+fn internal() -> ApiError {
+    api(ErrorCode::Internal, INTERNAL_ERROR_MESSAGE)
+}
+
 fn db_error(e: DbError) -> ApiError {
     tracing::error!(error = %e, "database operation failed");
-    api(ErrorCode::Internal, e.to_string())
+    internal()
 }
 
 fn rng_error(e: openssl::error::ErrorStack) -> ApiError {
     tracing::error!(error = %e, "CSPRNG failed");
-    api(ErrorCode::Internal, format!("CSPRNG: {e}"))
+    internal()
+}
+
+fn relay_error(command: &'static str, e: RelayGone) -> ApiError {
+    tracing::error!(command, error = %e, "relay command failed");
+    internal()
 }
 
 fn check_prefixed(field: &str, prefix: &str, map: &BTreeMap<String, String>) -> Result<(), ApiError> {
@@ -290,7 +301,7 @@ impl Hub {
                 Push::JoinDenied { join_id: *join_id, game_id, reason: JoinDenyReason::GameRemoved },
             );
         }
-        self.relay.revoke_game(game_id).map_err(|e| api(ErrorCode::Internal, e.to_string()))
+        self.relay.revoke_game(game_id).map_err(|e| relay_error("revoke_game", e))
     }
 
     fn remove_player(&self, st: &mut State, game_id: GameId, user: UserId, kicked: bool) -> Result<(), ApiError> {
@@ -304,14 +315,14 @@ impl Hub {
         for other in others {
             Self::push(st, other, Push::PlayerLeft { game_id, user_id: user });
         }
-        self.relay.revoke_user(game_id, user).map_err(|e| api(ErrorCode::Internal, e.to_string()))
+        self.relay.revoke_user(game_id, user).map_err(|e| relay_error("revoke_user", e))
     }
 
     fn relay_assignment(&self, game_id: GameId, user: UserId, slot: u8) -> Result<RelayAssignment, ApiError> {
         let token = hex(&random_bytes(RELAY_TOKEN_BYTES).map_err(rng_error)?);
         self.relay
             .register(token.clone().into_bytes(), Binding { game_id, user_id: user, slot })
-            .map_err(|e| api(ErrorCode::Internal, e.to_string()))?;
+            .map_err(|e| relay_error("register", e))?;
         let info = self.relay.public();
         Ok(RelayAssignment {
             host: info.host.clone(),
@@ -747,5 +758,18 @@ fn response_kind(r: &Response) -> &'static str {
         Response::Friends(_) => "friends",
         Response::Stats(_) => "stats",
         Response::Users(_) => "users",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// OpenSSL's RAND_bytes cannot be made to fail from a test, so this covers the mapping every CSPRNG call
+    /// site goes through, not a live failure.
+    #[test]
+    fn csprng_error_reaches_the_client_as_the_generic_message() {
+        let err = rng_error(openssl::error::ErrorStack::get());
+        assert_eq!(err, ApiError::new(ErrorCode::Internal, "internal error"));
     }
 }

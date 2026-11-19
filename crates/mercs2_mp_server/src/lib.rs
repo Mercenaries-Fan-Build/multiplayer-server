@@ -2,6 +2,7 @@
 //! DTLS relay for gameplay datagrams. The wire contract is the `mercs2_mp_api` crate.
 
 pub mod acme;
+pub mod admin;
 pub mod api;
 pub mod client_ip;
 pub mod config;

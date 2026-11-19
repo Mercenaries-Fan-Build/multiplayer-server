@@ -69,6 +69,8 @@ pub struct TestServer {
     pub relay: mercs2_mp_server::relay::RelayHandle,
     pub https_cert: PathBuf,
     pub relay_fingerprint: String,
+    /// The server's SQLite file (`database.path`).
+    pub db_path: PathBuf,
     _running: mercs2_mp_server::Running,
     _dir: tempfile::TempDir,
 }
@@ -134,6 +136,7 @@ impl TestServer {
             TlsConfig::Acme(_) => unreachable!("tests run proxied mode"),
         };
         let relay_fingerprint = sha256_hex_of_pem(&cfg.relay.cert_pem);
+        let db_path = cfg.database.path.clone();
         let running = mercs2_mp_server::start(cfg).await.unwrap();
         TestServer {
             https: running.https_addr,
@@ -141,6 +144,7 @@ impl TestServer {
             relay: running.relay.clone(),
             https_cert,
             relay_fingerprint,
+            db_path,
             _running: running,
             _dir: dir,
         }
@@ -157,26 +161,54 @@ impl TestServer {
         tls
     }
 
-    /// POST JSON as client IP `client_ip` (sent as X-Forwarded-For; the test peer is a trusted proxy).
-    pub async fn post(&self, path: &str, body: &str, client_ip: Option<&str>) -> (u16, serde_json::Value) {
+    /// One request with an optional Authorization header value (raw, scheme included), an optional client IP (sent
+    /// as X-Forwarded-For; the test peer is a trusted proxy) and an optional JSON body.
+    pub async fn request(
+        &self,
+        method: http::Method,
+        path: &str,
+        authorization: Option<&str>,
+        client_ip: Option<&str>,
+        body: Option<&str>,
+    ) -> (u16, http::HeaderMap, serde_json::Value) {
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(self.tls().await)).await.unwrap();
         tokio::spawn(conn);
-        let mut req = http::Request::post(path)
-            .header("host", "localhost")
-            .header("content-type", "application/json");
+        let mut req = http::Request::builder().method(method).uri(path).header("host", "localhost");
+        if let Some(a) = authorization {
+            req = req.header("authorization", a);
+        }
         if let Some(ip) = client_ip {
             req = req.header("x-forwarded-for", ip);
         }
-        let req = req.body(Full::new(Bytes::from(body.to_string()))).unwrap();
+        if body.is_some() {
+            req = req.header("content-type", "application/json");
+        }
+        let req = req.body(Full::new(Bytes::from(body.unwrap_or_default().to_string()))).unwrap();
         let rsp = sender.send_request(req).await.unwrap();
         let status = rsp.status().as_u16();
+        let headers = rsp.headers().clone();
         let bytes = rsp.into_body().collect().await.unwrap().to_bytes();
         let json = serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("non-JSON body {bytes:?}: {e}"));
-        (status, json)
+        (status, headers, json)
+    }
+
+    /// POST JSON as client IP `client_ip`.
+    pub async fn post(&self, path: &str, body: &str, client_ip: Option<&str>) -> (u16, http::HeaderMap, serde_json::Value) {
+        self.request(http::Method::POST, path, None, client_ip, Some(body)).await
+    }
+
+    /// GET with the given Authorization header value.
+    pub async fn get(&self, path: &str, authorization: Option<&str>) -> (u16, http::HeaderMap, serde_json::Value) {
+        self.request(http::Method::GET, path, authorization, None, None).await
+    }
+
+    /// PUT JSON with the given Authorization header value.
+    pub async fn put(&self, path: &str, authorization: Option<&str>, body: &str) -> (u16, http::HeaderMap, serde_json::Value) {
+        self.request(http::Method::PUT, path, authorization, None, Some(body)).await
     }
 
     pub async fn create_account(&self, name: &str) -> i64 {
-        let (status, body) = self
+        let (status, _, body) = self
             .post("/v1/accounts", &format!(r#"{{"username":"{name}","password":"password-{name}"}}"#), Some("198.51.100.1"))
             .await;
         assert_eq!(status, 201, "{body}");
@@ -188,7 +220,7 @@ impl TestServer {
             r#"{{"username":"{name}","password":"password-{name}","client":{{"build_sha256":"{}","asi_version":"test"}}}}"#,
             "ab".repeat(32)
         );
-        let (status, body) = self.post("/v1/sessions", &body, Some("198.51.100.1")).await;
+        let (status, _, body) = self.post("/v1/sessions", &body, Some("198.51.100.1")).await;
         assert_eq!(status, 200, "{body}");
         (body["token"].as_str().unwrap().to_string(), body["user_id"].as_i64().unwrap())
     }

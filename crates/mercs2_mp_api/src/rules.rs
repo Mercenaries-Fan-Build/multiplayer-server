@@ -22,6 +22,11 @@ pub const UGID_MAX: usize = 36;
 /// Policy: room keys are 6–32 characters from [`is_code_char`].
 pub const ROOM_KEY_MIN: usize = 6;
 pub const ROOM_KEY_MAX: usize = 32;
+/// Policy: leaderboard names are 1–32 bytes from [`is_board_char`].
+pub const BOARD_NAME_MAX: usize = 32;
+/// Highest leaderboard score: the game's cash cap (`MrxPmc.AddCashQty` clamps to `knBillion`,
+/// `docs/mercs2-luacd/src/resident/mrxpmc.lua:45-60`).
+pub const LEADERBOARD_SCORE_MAX: u32 = 1_000_000_000;
 
 fn invalid(field: &str, rule: &str) -> ApiError {
     ApiError::new(ErrorCode::InvalidField, format!("{field}: {rule}"))
@@ -36,6 +41,28 @@ pub fn check_username(name: &str) -> Result<(), ApiError> {
     }
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
         return Err(invalid("username", "may contain only ASCII letters, digits, '_', '-' and '.'"));
+    }
+    Ok(())
+}
+
+pub fn is_board_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Validates a leaderboard name (the `{board}` of the leaderboard routes). Names are compared exactly —
+/// case-sensitive, so `DlcCon001` and `dlccon001` are different boards. Any passing name is a board; none is
+/// built in.
+pub fn check_board_name(board: &str) -> Result<(), ApiError> {
+    if !(1..=BOARD_NAME_MAX).contains(&board.len()) || !board.chars().all(is_board_char) {
+        return Err(invalid("board", &format!("must be 1-{BOARD_NAME_MAX} ASCII letters, digits or '_'")));
+    }
+    Ok(())
+}
+
+/// Validates a pushed leaderboard score: 0 to [`LEADERBOARD_SCORE_MAX`].
+pub fn check_leaderboard_score(score: u32) -> Result<(), ApiError> {
+    if score > LEADERBOARD_SCORE_MAX {
+        return Err(invalid("score", &format!("must be 0-{LEADERBOARD_SCORE_MAX}")));
     }
     Ok(())
 }
@@ -84,5 +111,19 @@ mod tests {
         assert!(check_room_key("no spaces!").is_err());
         assert!(check_room_key(&"a".repeat(ROOM_KEY_MAX)).is_ok());
         assert!(check_room_key(&"a".repeat(ROOM_KEY_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn board_names_and_scores() {
+        for ok in ["DlcCon001", "a", "Z_9", &"b".repeat(BOARD_NAME_MAX)] {
+            assert!(check_board_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", &"b".repeat(BOARD_NAME_MAX + 1), "Dlc-Con", "Dlc Con", "Dlc.Con", "DlcCön", "Dlc/Con"] {
+            let err = check_board_name(bad).unwrap_err();
+            assert_eq!(err.code, ErrorCode::InvalidField, "{bad}");
+        }
+        assert!(check_leaderboard_score(0).is_ok());
+        assert!(check_leaderboard_score(LEADERBOARD_SCORE_MAX).is_ok());
+        assert_eq!(check_leaderboard_score(LEADERBOARD_SCORE_MAX + 1).unwrap_err().code, ErrorCode::InvalidField);
     }
 }
