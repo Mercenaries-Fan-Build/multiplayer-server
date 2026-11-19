@@ -53,7 +53,10 @@ pub fn status_of(code: ErrorCode) -> StatusCode {
     match code {
         ErrorCode::InvalidField => StatusCode::UNPROCESSABLE_ENTITY,
         ErrorCode::NameTaken | ErrorCode::GameFull | ErrorCode::GameClosed => StatusCode::CONFLICT,
-        ErrorCode::BadCredentials | ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+        // Login credentials travel in the JSON body, not an HTTP authentication scheme, so a wrong password is a
+        // 400 (RFC 6749 section 5.2) rather than a 401, which RFC 9110 section 15.5.2 ties to a challenge.
+        ErrorCode::BadCredentials => StatusCode::BAD_REQUEST,
+        ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
         ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         ErrorCode::NotFound => StatusCode::NOT_FOUND,
         ErrorCode::Forbidden | ErrorCode::JoinDenied => StatusCode::FORBIDDEN,
