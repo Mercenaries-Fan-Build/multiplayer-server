@@ -1,18 +1,21 @@
-//! HTTP routes: `POST /v1/accounts`, `POST /v1/sessions`, `GET /v1/sessions/current`, `GET /v1/ws`.
+//! HTTP routes: `POST /v1/accounts`, `POST /v1/sessions`, `GET /v1/ws`, and the leaderboards:
+//! `PUT /v1/leaderboards/{board}/score`, `GET /v1/leaderboards/{board}/me`, `GET /v1/leaderboards/{board}`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Bytes;
+use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
-use mercs2_mp_api::rest::{AccountCreated, CreateAccount, CreateSession, CurrentSession, SessionCreated};
+use axum::routing::{get, post, put};
+use mercs2_mp_api::rest::{AccountCreated, CreateAccount, CreateSession, PushScore, SessionCreated};
 use mercs2_mp_api::{ApiError, ErrorCode, rules};
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::client_ip::ClientIpPolicy;
@@ -26,6 +29,9 @@ use crate::util::{hex, now_unix, random_bytes, sha256};
 
 /// Bytes of CSPRNG output in a session token (sent as hex).
 const SESSION_TOKEN_BYTES: usize = 32;
+/// Rows of `GET /v1/leaderboards/{board}` when `count` is absent, and the most it may ask for.
+const LEADERBOARD_PAGE_DEFAULT: u32 = 30;
+const LEADERBOARD_PAGE_MAX: u32 = 100;
 
 pub struct App {
     pub db: Db,
@@ -33,7 +39,6 @@ pub struct App {
     pub hub: Arc<Hub>,
     pub accounts_limit: RateLimiter,
     pub sessions_limit: RateLimiter,
-    pub current_session_limit: RateLimiter,
     pub ip_policy: ClientIpPolicy,
     pub session_ttl: Duration,
     pub websocket: WebSocketConfig,
@@ -43,8 +48,10 @@ pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/v1/accounts", post(create_account))
         .route("/v1/sessions", post(create_session))
-        .route("/v1/sessions/current", get(current_session))
         .route("/v1/ws", get(websocket))
+        .route("/v1/leaderboards/{board}", get(leaderboard_page))
+        .route("/v1/leaderboards/{board}/score", put(push_score))
+        .route("/v1/leaderboards/{board}/me", get(my_standing))
         .fallback(|| async { error(StatusCode::NOT_FOUND, ApiError::new(ErrorCode::NotFound, "no such route")) })
         .with_state(app)
 }
@@ -192,8 +199,7 @@ async fn create_session(
         .await
         .map_err(db_failure)?;
     tracing::info!(user = user.id.0, build = %req.client.build_sha256, asi = %req.client.asi_version, "session created");
-    let body = SessionCreated { token, user_id: user.id, display_name: user.username, expires_at };
-    Ok(([(http::header::CACHE_CONTROL, HeaderValue::from_static("no-store"))], axum::Json(body)).into_response())
+    Ok(no_store(SessionCreated { token, user_id: user.id, display_name: user.username, expires_at }))
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -213,27 +219,86 @@ async fn authenticate(app: &App, headers: &HeaderMap) -> Result<SessionRow, Http
     }
 }
 
-async fn current_session(
+/// A JSON body that answers for one player's session: never stored by a cache.
+fn no_store(body: impl serde::Serialize) -> Response {
+    ([(http::header::CACHE_CONTROL, HeaderValue::from_static("no-store"))], axum::Json(body)).into_response()
+}
+
+/// The `{board}` path segment, checked by [`rules::check_board_name`].
+fn board_name(path: Result<Path<String>, PathRejection>) -> Result<String, HttpError> {
+    let Path(board) = path.map_err(|r| HttpError::from(ApiError::new(ErrorCode::InvalidField, format!("board: {}", r.body_text()))))?;
+    rules::check_board_name(&board)?;
+    Ok(board)
+}
+
+/// A score push body: malformed JSON is 400 like every other body; well-formed JSON whose `score` is not a
+/// u32 (negative, fractional, too large, missing) is 422, as is a u32 above the score cap.
+fn push_score_body(body: &[u8]) -> Result<PushScore, HttpError> {
+    let req: PushScore = serde_json::from_slice(body).map_err(|e| match e.classify() {
+        serde_json::error::Category::Data => HttpError::from(ApiError::new(ErrorCode::InvalidField, format!("score: {e}"))),
+        _ => error(StatusCode::BAD_REQUEST, ApiError::new(ErrorCode::InvalidField, format!("request body: {e}"))),
+    })?;
+    rules::check_leaderboard_score(req.score)?;
+    Ok(req)
+}
+
+async fn push_score(
     State(app): State<Arc<App>>,
-    Extension(peer): Extension<Peer>,
+    path: Result<Path<String>, PathRejection>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, HttpError> {
+    let session = authenticate(&app, &headers).await?;
+    let board = board_name(path)?;
+    let req = push_score_body(&body)?;
+    let uid = session.user.user_id;
+    match app.db.push_leaderboard_score(&board, uid, req.score, now_unix()).await.map_err(db_failure)? {
+        Some(entry) => {
+            tracing::info!(user = uid.0, %board, pushed = req.score, score = entry.score, rank = entry.rank, "leaderboard score pushed");
+            Ok(no_store(entry))
+        }
+        None => {
+            tracing::info!(user = uid.0, %board, pushed = req.score, "leaderboard push refused: account is banned");
+            Err(ApiError::new(ErrorCode::Forbidden, "this account is banned from leaderboards").into())
+        }
+    }
+}
+
+async fn my_standing(
+    State(app): State<Arc<App>>,
+    path: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
-    let verified = async {
-        admit(&app, &app.current_session_limit, peer, &headers)?;
-        authenticate(&app, &headers).await
+    let session = authenticate(&app, &headers).await?;
+    let board = board_name(path)?;
+    let entry = app.db.leaderboard_standing(&board, session.user.user_id).await.map_err(db_failure)?;
+    Ok(no_store(entry))
+}
+
+#[derive(Deserialize)]
+struct PageQuery {
+    from: Option<u32>,
+    count: Option<u32>,
+}
+
+async fn leaderboard_page(
+    State(app): State<Arc<App>>,
+    path: Result<Path<String>, PathRejection>,
+    query: Result<Query<PageQuery>, QueryRejection>,
+) -> Result<Response, HttpError> {
+    let board = board_name(path)?;
+    let Query(q) =
+        query.map_err(|r| HttpError::from(ApiError::new(ErrorCode::InvalidField, format!("query: {}", r.body_text()))))?;
+    let from = q.from.unwrap_or(1);
+    if from == 0 {
+        return Err(ApiError::new(ErrorCode::InvalidField, "from: ranks start at 1").into());
     }
-    .await;
-    // Logs the outcome only: never the Authorization header or any part of the token.
-    let session = match verified {
-        Ok(session) => session,
-        Err(e) => {
-            tracing::info!(code = ?e.1.code, error = %e.1.message, "session verification refused");
-            return Err(e);
-        }
-    };
-    tracing::info!(user = session.user.user_id.0, "session verified");
-    let body = CurrentSession { account_id: session.user.user_id, username: session.user.name };
-    Ok(([(http::header::CACHE_CONTROL, HeaderValue::from_static("no-store"))], axum::Json(body)).into_response())
+    let count = q.count.unwrap_or(LEADERBOARD_PAGE_DEFAULT);
+    if !(1..=LEADERBOARD_PAGE_MAX).contains(&count) {
+        return Err(ApiError::new(ErrorCode::InvalidField, format!("count: must be 1-{LEADERBOARD_PAGE_MAX}")).into());
+    }
+    let page = app.db.leaderboard_page(&board, from, count).await.map_err(db_failure)?;
+    Ok(axum::Json(page).into_response())
 }
 
 async fn websocket(
