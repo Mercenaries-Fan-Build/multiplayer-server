@@ -88,6 +88,79 @@ async fn sessions_200_401_same_error_for_unknown_user() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn current_session_names_the_tokens_account() {
+    let s = TestServer::start().await;
+    let chris = s.create_account("Chris").await;
+    let other = s.create_account("Other").await;
+    let build = "ab".repeat(32);
+    let lower = format!(r#"{{"username":"chris","password":"password-Chris","client":{{"build_sha256":"{build}","asi_version":"t"}}}}"#);
+    let (status, login) = s.post("/v1/sessions", &lower, Some("198.51.100.1")).await;
+    assert_eq!(status, 200, "{login}");
+    let token = login["token"].as_str().unwrap();
+
+    let (status, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {token}"))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, serde_json::json!({"account_id": chris, "username": "Chris"}), "registered spelling, nothing else");
+    let typed: mercs2_mp_api::rest::CurrentSession = serde_json::from_value(body).unwrap();
+    assert_eq!(typed.account_id, UserId(chris));
+
+    let (other_token, _) = s.login("Other").await;
+    let (status, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {other_token}"))).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, serde_json::json!({"account_id": other, "username": "Other"}));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_session_401_for_missing_malformed_or_unknown_token() {
+    let s = TestServer::start().await;
+    s.create_account("Valid").await;
+    let (token, _) = s.login("Valid").await;
+    let lowercase_scheme = format!("bearer {token}");
+    for auth in [None, Some("Bearer nope"), Some("Basic abc"), Some("Bearer "), Some(lowercase_scheme.as_str()), Some(token.as_str())] {
+        let (status, body) = s.get("/v1/sessions/current", auth).await;
+        assert_eq!(status, 401, "{auth:?}: {body}");
+        assert!(body["message"].is_string(), "{auth:?}: {body}");
+        assert_eq!(body["code"], "unauthorized", "{auth:?}: {body}");
+    }
+}
+
+/// Polls the wall clock (whole unix seconds, as the server stores session expiry) until it reaches `t`.
+async fn wait_until_unix(t: i64) {
+    loop {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        if now >= t {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_session_does_not_extend_the_session_and_401s_once_expired() {
+    let s = TestServer::start_with(|c| c.accounts.session_ttl_secs = 2).await;
+    s.create_account("Brief").await;
+    let build = "ab".repeat(32);
+    let login = format!(r#"{{"username":"Brief","password":"password-Brief","client":{{"build_sha256":"{build}","asi_version":"t"}}}}"#);
+    let (status, body) = s.post("/v1/sessions", &login, Some("198.51.100.1")).await;
+    assert_eq!(status, 200, "{body}");
+    let token = body["token"].as_str().unwrap().to_string();
+    let expires_at = body["expires_at"].as_i64().unwrap();
+    let auth = format!("Bearer {token}");
+
+    // One second after login: still valid. Had this call extended the session, it would outlive `expires_at`.
+    wait_until_unix(expires_at - 1).await;
+    let (status, body) = s.get("/v1/sessions/current", Some(&auth)).await;
+    assert_eq!(status, 200, "{body}");
+
+    wait_until_unix(expires_at).await;
+    let (status, body) = s.get("/v1/sessions/current", Some(&auth)).await;
+    assert_eq!(status, 401, "expired at {expires_at}: {body}");
+    assert_eq!(body["code"], "unauthorized");
+    let Err((status, _)) = s.ws_raw(Some(&auth)).await else { panic!("websocket accepted an expired token") };
+    assert_eq!(status, 401);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rate_limit_is_per_forwarded_client_ip() {
     let s = TestServer::start_with(|c| {
         c.rate_limit.accounts = mercs2_mp_server::config::BucketConfig { burst: 2, refill_per_minute: 1 };
