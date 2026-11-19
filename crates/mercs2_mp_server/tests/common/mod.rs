@@ -163,7 +163,7 @@ impl TestServer {
     }
 
     /// POST JSON as client IP `client_ip` (sent as X-Forwarded-For; the test peer is a trusted proxy).
-    pub async fn post(&self, path: &str, body: &str, client_ip: Option<&str>) -> (u16, serde_json::Value) {
+    pub async fn post(&self, path: &str, body: &str, client_ip: Option<&str>) -> (u16, http::HeaderMap, serde_json::Value) {
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(self.tls().await)).await.unwrap();
         tokio::spawn(conn);
         let mut req = http::Request::post(path)
@@ -175,9 +175,10 @@ impl TestServer {
         let req = req.body(Full::new(Bytes::from(body.to_string()))).unwrap();
         let rsp = sender.send_request(req).await.unwrap();
         let status = rsp.status().as_u16();
+        let headers = rsp.headers().clone();
         let bytes = rsp.into_body().collect().await.unwrap().to_bytes();
         let json = serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("non-JSON body {bytes:?}: {e}"));
-        (status, json)
+        (status, headers, json)
     }
 
     /// GET with the given Authorization header value (raw, scheme included) as client IP `client_ip` (sent as
@@ -207,7 +208,7 @@ impl TestServer {
     }
 
     pub async fn create_account(&self, name: &str) -> i64 {
-        let (status, body) = self
+        let (status, _, body) = self
             .post("/v1/accounts", &format!(r#"{{"username":"{name}","password":"password-{name}"}}"#), Some("198.51.100.1"))
             .await;
         assert_eq!(status, 201, "{body}");
@@ -219,7 +220,7 @@ impl TestServer {
             r#"{{"username":"{name}","password":"password-{name}","client":{{"build_sha256":"{}","asi_version":"test"}}}}"#,
             "ab".repeat(32)
         );
-        let (status, body) = self.post("/v1/sessions", &body, Some("198.51.100.1")).await;
+        let (status, _, body) = self.post("/v1/sessions", &body, Some("198.51.100.1")).await;
         assert_eq!(status, 200, "{body}");
         (body["token"].as_str().unwrap().to_string(), body["user_id"].as_i64().unwrap())
     }
