@@ -64,7 +64,7 @@ async fn accounts_201_409_422_400() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sessions_200_401_same_error_for_unknown_user() {
+async fn sessions_200_400_same_error_for_unknown_user() {
     let s = TestServer::start().await;
     let uid = s.create_account("Chris").await;
     let build = "ab".repeat(32);
@@ -78,9 +78,11 @@ async fn sessions_200_401_same_error_for_unknown_user() {
 
     let bad_pw = format!(r#"{{"username":"Chris","password":"wrong-password","client":{{"build_sha256":"{build}","asi_version":"t"}}}}"#);
     let unknown = format!(r#"{{"username":"Nobody","password":"wrong-password","client":{{"build_sha256":"{build}","asi_version":"t"}}}}"#);
-    let (s1, _, b1) = s.post("/v1/sessions", &bad_pw, Some("198.51.100.1")).await;
+    let (s1, h1, b1) = s.post("/v1/sessions", &bad_pw, Some("198.51.100.1")).await;
     let (s2, _, b2) = s.post("/v1/sessions", &unknown, Some("198.51.100.1")).await;
-    assert_eq!((s1, s2), (401, 401));
+    // RFC 6749 section 5.2 answers a wrong password at a token endpoint with 400, not an HTTP-auth 401.
+    assert_eq!((s1, s2), (400, 400));
+    assert!(h1.get("www-authenticate").is_none(), "{h1:?}");
     assert_eq!(b1, b2, "unknown user and wrong password are indistinguishable");
     assert_eq!(b1["code"], "bad_credentials");
 
