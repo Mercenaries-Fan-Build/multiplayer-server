@@ -50,8 +50,9 @@ pub struct SessionCreated {
 
 /// `GET /v1/sessions/current` with `Authorization: Bearer <token>` (the [`SessionCreated::token`]); no body.
 /// Names the account a session token belongs to, for services that verify a player's token. Read-only: the
-/// session's expiry and state are unchanged. 200 on success; 401 `unauthorized` when the header is missing or
-/// malformed, or the token is unknown or expired.
+/// session's expiry and state are unchanged. 200 on success, with `Cache-Control: no-store`; 401 `unauthorized`
+/// (with a `WWW-Authenticate: Bearer` challenge) when the header is missing or malformed, or the token is unknown
+/// or expired; 429 `rate_limited`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentSession {
     /// The account's server-assigned id ([`AccountCreated::user_id`], [`SessionCreated::user_id`]).
