@@ -183,8 +183,16 @@ async fn leaderboard_push_me_and_page() {
     assert_eq!(window["total"], 3);
     assert_eq!(window["rows"].as_array().unwrap().len(), 1);
     assert_eq!((window["rows"][0]["rank"].as_u64(), window["rows"][0]["user_id"].as_i64()), (Some(2), Some(c)));
-    let (_, _, past) = s.get(&format!("/v1/leaderboards/{board}?from=4"), None).await;
-    assert_eq!((past["total"].as_u64(), past["rows"].as_array().unwrap().len()), (Some(3), 0));
+    // Past the last entry is an empty page, never an error: mercs.ink asks for any from in 1..=999_999_999.
+    for from in ["4", "999999999"] {
+        let (status, _, past) = s.get(&format!("/v1/leaderboards/{board}?from={from}&count=100"), None).await;
+        assert_eq!(status, 200, "from={from}: {past}");
+        assert_eq!(past, serde_json::json!({"board": board, "total": 3, "rows": []}), "from={from}");
+    }
+    let (status, _, empty) = s.get("/v1/leaderboards/NoEntries?from=999999999", None).await;
+    assert_eq!((status, empty), (200, serde_json::json!({"board": "NoEntries", "total": 0, "rows": []})));
+    let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    assert!((before - 60..=before).contains(&page.rows[2].updated_at), "updated_at is unix seconds");
     let (_, _, other_case) = s.get("/v1/leaderboards/dlccon001", None).await;
     assert_eq!(other_case["total"], 0, "board names are case-sensitive");
 }
