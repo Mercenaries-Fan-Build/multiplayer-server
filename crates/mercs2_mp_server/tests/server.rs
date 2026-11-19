@@ -92,31 +92,7 @@ async fn sessions_200_400_same_error_for_unknown_user() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn current_session_names_the_tokens_account() {
-    let s = TestServer::start().await;
-    let chris = s.create_account("Chris").await;
-    let other = s.create_account("Other").await;
-    let build = "ab".repeat(32);
-    let lower = format!(r#"{{"username":"chris","password":"password-Chris","client":{{"build_sha256":"{build}","asi_version":"t"}}}}"#);
-    let (status, _, login) = s.post("/v1/sessions", &lower, Some("198.51.100.1")).await;
-    assert_eq!(status, 200, "{login}");
-    let token = login["token"].as_str().unwrap();
-
-    let (status, headers, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {token}")), Some("198.51.100.1")).await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body, serde_json::json!({"account_id": chris, "username": "Chris"}), "registered spelling, nothing else");
-    assert_eq!(headers.get("cache-control").map(|v| v.to_str().unwrap()), Some("no-store"), "{headers:?}");
-    let typed: mercs2_mp_api::rest::CurrentSession = serde_json::from_value(body).unwrap();
-    assert_eq!(typed.account_id, UserId(chris));
-
-    let (other_token, _) = s.login("Other").await;
-    let (status, _, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {other_token}")), Some("198.51.100.1")).await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body, serde_json::json!({"account_id": other, "username": "Other"}));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn current_session_401_for_missing_malformed_or_unknown_token() {
+async fn bearer_routes_401_with_a_challenge_for_missing_malformed_or_unknown_token() {
     let s = TestServer::start().await;
     s.create_account("Valid").await;
     let (token, _) = s.login("Valid").await;
@@ -132,16 +108,162 @@ async fn current_session_401_for_missing_malformed_or_unknown_token() {
         (Some(lowercase_scheme.as_str()), no_token),
         (Some(token.as_str()), no_token),
     ];
-    for path in ["/v1/sessions/current", "/v1/ws"] {
+    let routes = [
+        (http::Method::GET, "/v1/ws", None),
+        (http::Method::GET, "/v1/leaderboards/DlcCon001/me", None),
+        (http::Method::PUT, "/v1/leaderboards/DlcCon001/score", Some(r#"{"score":5}"#)),
+    ];
+    for (method, path, body) in routes {
         for (auth, challenge) in cases {
-            let (status, headers, body) = s.get(path, auth, Some("198.51.100.1")).await;
-            assert_eq!(status, 401, "{path} {auth:?}: {body}");
-            assert!(body["message"].is_string(), "{path} {auth:?}: {body}");
-            assert_eq!(body["code"], "unauthorized", "{path} {auth:?}: {body}");
+            let (status, headers, rsp) = s.request(method.clone(), path, auth, None, body).await;
+            assert_eq!(status, 401, "{path} {auth:?}: {rsp}");
+            assert!(rsp["message"].is_string(), "{path} {auth:?}: {rsp}");
+            assert_eq!(rsp["code"], "unauthorized", "{path} {auth:?}: {rsp}");
             let www: Vec<&str> = headers.get_all("www-authenticate").iter().map(|v| v.to_str().unwrap()).collect();
             assert_eq!(www, [challenge], "{path} {auth:?}");
         }
     }
+    assert_eq!(s.get("/v1/leaderboards/DlcCon001", None).await.0, 200, "the board itself is public");
+}
+
+fn no_store(headers: &http::HeaderMap) -> bool {
+    headers.get("cache-control").map(|v| v.to_str().unwrap()) == Some("no-store")
+}
+
+/// Pushes `score` to `board` and returns the status and body.
+async fn push(s: &TestServer, token: &str, board: &str, body: &str) -> (u16, serde_json::Value) {
+    let (status, headers, rsp) = s.put(&format!("/v1/leaderboards/{board}/score"), Some(&format!("Bearer {token}")), body).await;
+    if status == 200 {
+        assert!(no_store(&headers), "{headers:?}");
+    }
+    (status, rsp)
+}
+
+async fn me(s: &TestServer, token: &str, board: &str) -> (u16, serde_json::Value) {
+    let (status, headers, rsp) = s.get(&format!("/v1/leaderboards/{board}/me"), Some(&format!("Bearer {token}"))).await;
+    if status == 200 {
+        assert!(no_store(&headers), "{headers:?}");
+    }
+    (status, rsp)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leaderboard_push_me_and_page() {
+    let s = TestServer::start().await;
+    let a = s.create_account("Aaa").await;
+    let b = s.create_account("Bbb").await;
+    let c = s.create_account("Ccc").await;
+    let (ta, _) = s.login("Aaa").await;
+    let (tb, _) = s.login("Bbb").await;
+    let (tc, _) = s.login("Ccc").await;
+    let board = "DlcCon001";
+    let entry = |rank: u32, score: u32| serde_json::json!({"rank": rank, "score": score});
+
+    assert_eq!(me(&s, &ta, board).await, (200, entry(0, 0)), "no entry yet");
+    assert_eq!(push(&s, &ta, board, r#"{"score":100}"#).await, (200, entry(1, 100)));
+    assert_eq!(push(&s, &tb, board, r#"{"score":300}"#).await, (200, entry(1, 300)));
+    assert_eq!(me(&s, &ta, board).await, (200, entry(2, 100)));
+    assert_eq!(push(&s, &ta, board, r#"{"score":50}"#).await, (200, entry(2, 100)), "the best score is kept");
+    // Equal scores: Bbb reached 300 first (or in the same second with the lower user id), so Ccc ranks below.
+    assert_eq!(push(&s, &tc, board, r#"{"score":300}"#).await, (200, entry(2, 300)));
+    assert_eq!(me(&s, &ta, board).await, (200, entry(3, 100)));
+    assert_eq!(me(&s, &ta, "DlcCon002").await, (200, entry(0, 0)), "boards are separate");
+
+    let (status, headers, page) = s.get(&format!("/v1/leaderboards/{board}"), None).await;
+    assert_eq!(status, 200, "{page}");
+    assert!(!no_store(&headers), "the public page is cacheable: {headers:?}");
+    let page: mercs2_mp_api::rest::LeaderboardPage = serde_json::from_value(page).unwrap();
+    assert_eq!((page.board.as_str(), page.total), (board, 3));
+    let rows: Vec<(u32, i64, &str, u32)> =
+        page.rows.iter().map(|r| (r.rank, r.user_id.0, r.display_name.as_str(), r.score)).collect();
+    assert_eq!(rows, [(1, b, "Bbb", 300), (2, c, "Ccc", 300), (3, a, "Aaa", 100)]);
+    assert!(page.rows[0].updated_at <= page.rows[1].updated_at);
+
+    let (_, _, window) = s.get(&format!("/v1/leaderboards/{board}?from=2&count=1"), None).await;
+    assert_eq!(window["total"], 3);
+    assert_eq!(window["rows"].as_array().unwrap().len(), 1);
+    assert_eq!((window["rows"][0]["rank"].as_u64(), window["rows"][0]["user_id"].as_i64()), (Some(2), Some(c)));
+    let (_, _, past) = s.get(&format!("/v1/leaderboards/{board}?from=4"), None).await;
+    assert_eq!((past["total"].as_u64(), past["rows"].as_array().unwrap().len()), (Some(3), 0));
+    let (_, _, other_case) = s.get("/v1/leaderboards/dlccon001", None).await;
+    assert_eq!(other_case["total"], 0, "board names are case-sensitive");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leaderboard_page_from_and_count_limits() {
+    let s = TestServer::start().await;
+    for i in 0..105 {
+        let name = format!("Player{i:03}");
+        s.create_account(&name).await;
+        let (token, _) = s.login(&name).await;
+        assert_eq!(push(&s, &token, "Big", &format!(r#"{{"score":{i}}}"#)).await.0, 200);
+    }
+    let rows = |page: &serde_json::Value| page["rows"].as_array().unwrap().len();
+    let (_, _, default) = s.get("/v1/leaderboards/Big", None).await;
+    assert_eq!((default["total"].as_u64(), rows(&default)), (Some(105), 30), "count defaults to 30");
+    assert_eq!(default["rows"][0]["rank"], 1, "from defaults to 1");
+    let (status, _, max) = s.get("/v1/leaderboards/Big?count=100", None).await;
+    assert_eq!((status, rows(&max)), (200, 100));
+    assert_eq!(max["rows"][99]["rank"], 100);
+    let (_, _, tail) = s.get("/v1/leaderboards/Big?from=101&count=100", None).await;
+    assert_eq!(rows(&tail), 5);
+    assert_eq!((tail["rows"][0]["rank"].as_u64(), tail["rows"][4]["score"].as_u64()), (Some(101), Some(0)));
+    for bad in ["from=0", "count=0", "count=101", "count=-1", "from=abc", "from=4294967296"] {
+        let (status, _, body) = s.get(&format!("/v1/leaderboards/Big?{bad}"), None).await;
+        assert_eq!(status, 422, "{bad}: {body}");
+        assert_eq!(body["code"], "invalid_field", "{bad}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leaderboard_rejects_bad_boards_and_scores() {
+    let s = TestServer::start().await;
+    s.create_account("Valid").await;
+    let (token, _) = s.login("Valid").await;
+    let max = mercs2_mp_api::rules::LEADERBOARD_SCORE_MAX;
+    assert_eq!(push(&s, &token, "B1", &format!(r#"{{"score":{max}}}"#)).await, (200, serde_json::json!({"rank":1,"score":max})));
+    assert_eq!(push(&s, &token, "B1", r#"{"score":0}"#).await.0, 200);
+    for body in [format!(r#"{{"score":{}}}"#, max + 1), r#"{"score":-1}"#.into(), r#"{"score":1.5}"#.into(), r#"{"score":"7"}"#.into(), "{}".into()]
+    {
+        let (status, rsp) = push(&s, &token, "B1", &body).await;
+        assert_eq!((status, rsp["code"].as_str()), (422, Some("invalid_field")), "{body}: {rsp}");
+    }
+    let (status, rsp) = push(&s, &token, "B1", "not json").await;
+    assert_eq!((status, rsp["code"].as_str()), (400, Some("invalid_field")), "{rsp}");
+
+    let long = "b".repeat(mercs2_mp_api::rules::BOARD_NAME_MAX + 1);
+    for board in ["Dlc-Con", "Dlc.Con", "D%C3%B6n", "Dlc%20Con", long.as_str()] {
+        let (status, rsp) = push(&s, &token, board, r#"{"score":1}"#).await;
+        assert_eq!((status, rsp["code"].as_str()), (422, Some("invalid_field")), "push {board}: {rsp}");
+        assert_eq!(me(&s, &token, board).await.0, 422, "me {board}");
+        assert_eq!(s.get(&format!("/v1/leaderboards/{board}"), None).await.0, 422, "page {board}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn banned_accounts_get_403_and_are_left_out() {
+    let s = TestServer::start().await;
+    let a = s.create_account("Aaa").await;
+    let b = s.create_account("Bbb").await;
+    let (ta, _) = s.login("Aaa").await;
+    let (tb, _) = s.login("Bbb").await;
+    assert_eq!(push(&s, &ta, "B1", r#"{"score":500}"#).await.0, 200);
+    assert_eq!(push(&s, &tb, "B1", r#"{"score":100}"#).await, (200, serde_json::json!({"rank":2,"score":100})));
+
+    let db = mercs2_mp_server::db::Db::open(&s.db_path).await.unwrap();
+    assert!(db.ban_from_leaderboards(UserId(a), "edited save", 1).await.unwrap());
+
+    let (status, rsp) = push(&s, &ta, "B1", r#"{"score":900}"#).await;
+    assert_eq!((status, rsp["code"].as_str()), (403, Some("forbidden")), "{rsp}");
+    assert_eq!(me(&s, &ta, "B1").await, (200, serde_json::json!({"rank":0,"score":0})));
+    assert_eq!(me(&s, &tb, "B1").await, (200, serde_json::json!({"rank":1,"score":100})));
+    let (_, _, page) = s.get("/v1/leaderboards/B1", None).await;
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["rows"].as_array().unwrap().len(), 1);
+    assert_eq!((page["rows"][0]["user_id"].as_i64(), page["rows"][0]["rank"].as_u64()), (Some(b), Some(1)));
+
+    assert!(db.unban_from_leaderboards(UserId(a)).await.unwrap());
+    assert_eq!(me(&s, &ta, "B1").await, (200, serde_json::json!({"rank":1,"score":500})), "the 900 push was not stored");
 }
 
 /// Everything this test binary logs from the moment the first caller installs it, at every level.
@@ -171,46 +293,23 @@ fn captured_log() -> Arc<Mutex<Vec<u8>>> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn current_session_logs_each_outcome_and_never_the_token() {
+async fn rest_500_body_names_no_internal_detail() {
     let log = captured_log();
-    let s = TestServer::start().await;
-    let id = s.create_account("Logged").await;
-    let (token, _) = s.login("Logged").await;
-    let unknown = "0f1e2d3c4b5a6978".repeat(4);
-    let ip = Some("198.51.100.1");
-    assert_eq!(s.get("/v1/sessions/current", Some(&format!("Bearer {token}")), ip).await.0, 200);
-    assert_eq!(s.get("/v1/sessions/current", Some(&format!("Bearer {unknown}")), ip).await.0, 401);
-    assert_eq!(s.get("/v1/sessions/current", None, ip).await.0, 401);
-
-    let text = String::from_utf8(log.lock().unwrap().clone()).unwrap();
-    assert!(text.contains(&format!("session verified user={id}")), "{text}");
-    assert!(
-        text.contains("session verification refused code=Unauthorized error=session token unknown or expired"),
-        "{text}"
-    );
-    assert!(
-        text.contains("session verification refused code=Unauthorized error=Authorization: Bearer <session token> required"),
-        "{text}"
-    );
-    for secret in [&token, &unknown] {
-        assert!(!text.contains(&secret[..8]), "token prefix {} is in the log", &secret[..8]);
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn current_session_500_body_names_no_internal_detail() {
     let s = TestServer::start().await;
     s.create_account("Broken").await;
     let (token, _) = s.login("Broken").await;
-    // Take the sessions table away behind the server's back so its session lookup fails inside SQLite.
+    // Take the scores table away behind the server's back so the standing query fails inside SQLite.
     let mut conn = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!("sqlite://{}", s.db_path.display()))
         .await
         .unwrap();
-    sqlx::query("ALTER TABLE sessions RENAME TO sessions_moved").execute(&mut conn).await.unwrap();
+    sqlx::query("ALTER TABLE leaderboard_scores RENAME TO leaderboard_scores_moved").execute(&mut conn).await.unwrap();
 
-    let (status, _, body) = s.get("/v1/sessions/current", Some(&format!("Bearer {token}")), Some("198.51.100.1")).await;
+    let (status, _, body) = s.get("/v1/leaderboards/B1/me", Some(&format!("Bearer {token}"))).await;
     assert_eq!(status, 500, "{body}");
     assert_eq!(body, serde_json::json!({"code": "internal", "message": "internal error"}));
+    let text = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    assert!(text.contains("no such table: leaderboard_scores"), "the detail stays in the server's record");
+    assert!(!text.contains(&token[..8]), "token prefix in the server's record");
 }
 
 /// The error a client is sent for any internal failure, over REST and the WebSocket alike.
@@ -328,7 +427,7 @@ async fn wait_until_unix(t: i64) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn current_session_does_not_extend_the_session_and_401s_once_expired() {
+async fn bearer_routes_do_not_extend_the_session_and_401_once_expired() {
     let s = TestServer::start_with(|c| c.accounts.session_ttl_secs = 2).await;
     s.create_account("Brief").await;
     let build = "ab".repeat(32);
@@ -341,13 +440,17 @@ async fn current_session_does_not_extend_the_session_and_401s_once_expired() {
 
     // One second after login: still valid. Had this call extended the session, it would outlive `expires_at`.
     wait_until_unix(expires_at - 1).await;
-    let (status, _, body) = s.get("/v1/sessions/current", Some(&auth), Some("198.51.100.1")).await;
+    let (status, _, body) = s.get("/v1/leaderboards/B1/me", Some(&auth)).await;
+    assert_eq!(status, 200, "{body}");
+    let (status, _, body) = s.put("/v1/leaderboards/B1/score", Some(&auth), r#"{"score":1}"#).await;
     assert_eq!(status, 200, "{body}");
 
     wait_until_unix(expires_at).await;
-    let (status, _, body) = s.get("/v1/sessions/current", Some(&auth), Some("198.51.100.1")).await;
+    let (status, _, body) = s.get("/v1/leaderboards/B1/me", Some(&auth)).await;
     assert_eq!(status, 401, "expired at {expires_at}: {body}");
     assert_eq!(body["code"], "unauthorized");
+    let (status, _, body) = s.put("/v1/leaderboards/B1/score", Some(&auth), r#"{"score":2}"#).await;
+    assert_eq!(status, 401, "expired at {expires_at}: {body}");
     let Err((status, _)) = s.ws_raw(Some(&auth)).await else { panic!("websocket accepted an expired token") };
     assert_eq!(status, 401);
 }
@@ -365,26 +468,6 @@ async fn rate_limit_is_per_forwarded_client_ip() {
     assert_eq!(status, 429);
     assert_eq!(b["code"], "rate_limited");
     assert_eq!(s.post("/v1/accounts", &body("ddd"), Some("203.0.113.2")).await.0, 201, "other client unaffected");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn current_session_rate_limit_is_per_forwarded_client_ip() {
-    let s = TestServer::start_with(|c| {
-        c.rate_limit.current_session = mercs2_mp_server::config::BucketConfig { burst: 2, refill_per_minute: 1 };
-    })
-    .await;
-    s.create_account("Limited").await;
-    let (token, _) = s.login("Limited").await;
-    let auth = format!("Bearer {token}");
-    let ip = Some("203.0.113.1");
-    // A rejected token spends from the bucket too, so guessing tokens is throttled.
-    assert_eq!(s.get("/v1/sessions/current", Some("Bearer nope"), ip).await.0, 401);
-    assert_eq!(s.get("/v1/sessions/current", Some(&auth), ip).await.0, 200);
-    let (status, _, body) = s.get("/v1/sessions/current", Some(&auth), ip).await;
-    assert_eq!(status, 429, "{body}");
-    assert_eq!(body["code"], "rate_limited");
-    let (status, _, body) = s.get("/v1/sessions/current", Some(&auth), Some("203.0.113.2")).await;
-    assert_eq!(status, 200, "other client unaffected: {body}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
