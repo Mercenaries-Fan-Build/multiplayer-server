@@ -1,4 +1,4 @@
-//! HTTP routes: `POST /v1/accounts`, `POST /v1/sessions`, `GET /v1/ws`.
+//! HTTP routes: `POST /v1/accounts`, `POST /v1/sessions`, `GET /v1/sessions/current`, `GET /v1/ws`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,13 +11,13 @@ use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use mercs2_mp_api::rest::{AccountCreated, CreateAccount, CreateSession, SessionCreated};
+use mercs2_mp_api::rest::{AccountCreated, CreateAccount, CreateSession, CurrentSession, SessionCreated};
 use mercs2_mp_api::{ApiError, ErrorCode, rules};
 use serde::de::DeserializeOwned;
 
 use crate::client_ip::ClientIpPolicy;
 use crate::config::WebSocketConfig;
-use crate::db::{Db, DbError};
+use crate::db::{Db, DbError, SessionRow};
 use crate::hub::Hub;
 use crate::passwords::{PasswordError, Passwords};
 use crate::ratelimit::RateLimiter;
@@ -42,6 +42,7 @@ pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/v1/accounts", post(create_account))
         .route("/v1/sessions", post(create_session))
+        .route("/v1/sessions/current", get(current_session))
         .route("/v1/ws", get(websocket))
         .fallback(|| async { error(StatusCode::NOT_FOUND, ApiError::new(ErrorCode::NotFound, "no such route")) })
         .with_state(app)
@@ -181,18 +182,28 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     (!token.is_empty()).then_some(token)
 }
 
+/// The live session named by the request's bearer token. Read-only: the session row is not modified.
+async fn authenticate(app: &App, headers: &HeaderMap) -> Result<SessionRow, HttpError> {
+    let Some(token) = bearer(headers) else {
+        return Err(ApiError::new(ErrorCode::Unauthorized, "Authorization: Bearer <session token> required").into());
+    };
+    match app.db.session(&sha256(token.as_bytes()), now_unix()).await.map_err(db_failure)? {
+        Some(s) => Ok(s),
+        None => Err(ApiError::new(ErrorCode::Unauthorized, "session token unknown or expired").into()),
+    }
+}
+
+async fn current_session(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, HttpError> {
+    let session = authenticate(&app, &headers).await?;
+    Ok(axum::Json(CurrentSession { account_id: session.user.user_id, username: session.user.name }).into_response())
+}
+
 async fn websocket(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Result<Response, HttpError> {
-    let Some(token) = bearer(&headers) else {
-        return Err(ApiError::new(ErrorCode::Unauthorized, "Authorization: Bearer <session token> required").into());
-    };
-    let session = match app.db.session(&sha256(token.as_bytes()), now_unix()).await.map_err(db_failure)? {
-        Some(s) => s,
-        None => return Err(ApiError::new(ErrorCode::Unauthorized, "session token unknown or expired").into()),
-    };
+    let session = authenticate(&app, &headers).await?;
     let upgrade = upgrade.map_err(|rejection| {
         error(rejection.status(), ApiError::new(ErrorCode::Unsupported, rejection.body_text()))
     })?;
