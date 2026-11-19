@@ -97,9 +97,6 @@ pub struct RateLimitConfig {
     pub accounts: BucketConfig,
     /// `POST /v1/sessions`, per client IP.
     pub sessions: BucketConfig,
-    /// `GET /v1/sessions/current`, per client IP. A service verifying players' tokens shares one bucket for
-    /// all of them.
-    pub current_session: BucketConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -222,11 +219,9 @@ impl Config {
             None,
         )
         .map_err(|e| invalid("accounts.argon2_*", format!("rejected by argon2: {e}")))?;
-        for (key, bucket) in [
-            ("rate_limit.accounts", self.rate_limit.accounts),
-            ("rate_limit.sessions", self.rate_limit.sessions),
-            ("rate_limit.current_session", self.rate_limit.current_session),
-        ] {
+        for (key, bucket) in
+            [("rate_limit.accounts", self.rate_limit.accounts), ("rate_limit.sessions", self.rate_limit.sessions)]
+        {
             if bucket.burst == 0 || bucket.refill_per_minute == 0 {
                 return Err(invalid(key, "burst and refill_per_minute must both be > 0"));
             }
@@ -333,7 +328,6 @@ argon2_parallelism = 1
 [rate_limit]
 accounts = { burst = 5, refill_per_minute = 5 }
 sessions = { burst = 10, refill_per_minute = 20 }
-current_session = { burst = 60, refill_per_minute = 120 }
 [websocket]
 max_message_bytes = 65536
 outbound_queue = 256
@@ -418,16 +412,6 @@ retry_interval_secs = 3600
             .collect();
         let proxied = Config::parse(Path::new("config.example.toml"), &format!("{base}[tls]\n{proxied_tls}")).unwrap();
         assert!(matches!(proxied.tls, TlsConfig::Proxied(_)));
-    }
-
-    #[test]
-    fn current_session_bucket_is_required_and_validated() {
-        let text = PROXIED.replace("current_session = { burst = 60, refill_per_minute = 120 }\n", "");
-        let err = Config::parse(Path::new("t.toml"), &text).unwrap_err();
-        assert!(err.to_string().contains("current_session"), "{err}");
-        let text = PROXIED.replace("current_session = { burst = 60,", "current_session = { burst = 0,");
-        let err = Config::parse(Path::new("t.toml"), &text).unwrap_err();
-        assert!(err.to_string().contains("rate_limit.current_session"), "{err}");
     }
 
     #[test]
