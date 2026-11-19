@@ -42,7 +42,7 @@ pub enum ErrorCode {
     JoinDenied,
     /// The client sent a message type or version the server does not support.
     Unsupported,
-    /// Server-side failure; `message` carries the reason.
+    /// Server-side failure; `message` is always `"internal error"` (the reason stays in the server's log).
     Internal,
 }
 
