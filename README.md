@@ -7,11 +7,17 @@ server through the `mercs2_mp_api` contract (`crates/mercs2_mp_api`):
 |---|---|---|
 | `POST /v1/accounts` | HTTPS | create an account (argon2id password hash) |
 | `POST /v1/sessions` | HTTPS | log in, get a bearer token (only its sha256 is stored); `Cache-Control: no-store` |
-| `GET /v1/sessions/current` | HTTPS, `Authorization: Bearer <token>` | the account a live token belongs to (`account_id`, `username`); read-only, `Cache-Control: no-store`, 401 when missing/unknown/expired, 429 past `rate_limit.current_session` |
 | `GET /v1/ws` | WebSocket over HTTPS, `Authorization: Bearer <token>` | lobby: games, joins, friends, stats, pushes |
+| `PUT /v1/leaderboards/{board}/score` | HTTPS, `Authorization: Bearer <token>` | push a score (`{"score": n}`, 0–1 000 000 000); the best per player and board is kept; answers the player's `{rank, score}`; `Cache-Control: no-store`; 403 when banned |
+| `GET /v1/leaderboards/{board}/me` | HTTPS, `Authorization: Bearer <token>` | the player's `{rank, score}` (`0, 0` = no entry); `Cache-Control: no-store` |
+| `GET /v1/leaderboards/{board}?from=&count=` | HTTPS, public | a page of the board (`from` 1-based, default 1; `count` 1–100, default 30) with the board's total |
 | relay | UDP, DTLS 1.2 | gameplay/voice datagrams between the players of one game |
 
-Games live in memory only; accounts, sessions, friends and stats live in SQLite (`database.path`).
+Games live in memory only; accounts, sessions, friends, stats and leaderboards live in SQLite (`database.path`).
+
+Leaderboards (`mercs2_mp_api::rest`): a board is any name of 1–32 ASCII letters, digits or `_` (case-sensitive).
+A board is ordered by score descending, then by who reached the score first, then by user id; a rank is the
+1-based position in that order. Accounts banned from leaderboards are left out of every page, rank and total.
 
 Game privacy uses room keys (`mercs2_mp_api::ws::Privacy`). A host may set an optional `room_key` (6–32 ASCII letters,
 digits or `-`, compared case-sensitively); keys are not unique, so any number of live games may share one. A client
@@ -34,6 +40,25 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 ```
 
 Replacing the relay certificate changes the fingerprint; clients receive the new one on their next game.
+
+## Leaderboard moderation
+
+`mp-server --config <file> <subcommand> …` runs one moderation command against `database.path` and exits (0 done,
+1 refused or failed with the reason on stderr, 2 bad arguments or config). It works while the server runs. With
+the compose setup:
+
+```sh
+docker compose exec mp-server mp-server --config /etc/mp-server/config.toml leaderboards-ban <username> "<reason>"
+docker compose exec mp-server mp-server --config /etc/mp-server/config.toml leaderboards-unban <username>
+docker compose exec mp-server mp-server --config /etc/mp-server/config.toml leaderboards-delete-score <board> <username>
+```
+
+- `leaderboards-ban` leaves the account out of every leaderboard page, rank and total at once and answers its
+  score pushes with 403; its `me` reads `0, 0`. Its score rows are kept, so `leaderboards-unban` restores them.
+  Banning an already banned account changes nothing and reports the existing ban.
+- `leaderboards-delete-score` deletes the account's entry on one board (the name is case-sensitive). It does not
+  ban: the player can push again.
+- Usernames are matched case-insensitively, as at login.
 
 ## Deploy on a VM with a public IP (TLS mode `acme`)
 
