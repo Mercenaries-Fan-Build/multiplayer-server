@@ -123,6 +123,7 @@ pub async fn start(cfg: Config) -> Result<Running, ServerError> {
         hub,
         accounts_limit: RateLimiter::new(cfg.rate_limit.accounts),
         sessions_limit: RateLimiter::new(cfg.rate_limit.sessions),
+        current_session_limit: RateLimiter::new(cfg.rate_limit.current_session),
         ip_policy: ClientIpPolicy { trusted_proxies },
         session_ttl: Duration::from_secs(cfg.accounts.session_ttl_secs),
         websocket: cfg.websocket.clone(),
