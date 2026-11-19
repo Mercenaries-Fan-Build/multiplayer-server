@@ -6,7 +6,7 @@ server through the `mercs2_mp_api` contract (`crates/mercs2_mp_api`):
 | Endpoint | Transport | Purpose |
 |---|---|---|
 | `POST /v1/accounts` | HTTPS | create an account (argon2id password hash) |
-| `POST /v1/sessions` | HTTPS | log in, get a bearer token (only its sha256 is stored) |
+| `POST /v1/sessions` | HTTPS | log in, get a bearer token (only its sha256 is stored); `Cache-Control: no-store` |
 | `GET /v1/sessions/current` | HTTPS, `Authorization: Bearer <token>` | the account a live token belongs to (`account_id`, `username`); read-only, `Cache-Control: no-store`, 401 when missing/unknown/expired, 429 past `rate_limit.current_session` |
 | `GET /v1/ws` | WebSocket over HTTPS, `Authorization: Bearer <token>` | lobby: games, joins, friends, stats, pushes |
 | relay | UDP, DTLS 1.2 | gameplay/voice datagrams between the players of one game |
