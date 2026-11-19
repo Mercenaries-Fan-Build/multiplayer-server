@@ -8,7 +8,7 @@ use axum::body::Bytes;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Extension, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use mercs2_mp_api::rest::{AccountCreated, CreateAccount, CreateSession, CurrentSession, SessionCreated};
@@ -33,6 +33,7 @@ pub struct App {
     pub hub: Arc<Hub>,
     pub accounts_limit: RateLimiter,
     pub sessions_limit: RateLimiter,
+    pub current_session_limit: RateLimiter,
     pub ip_policy: ClientIpPolicy,
     pub session_ttl: Duration,
     pub websocket: WebSocketConfig,
@@ -61,28 +62,39 @@ pub fn status_of(code: ErrorCode) -> StatusCode {
     }
 }
 
-/// An error response: HTTP status plus the `mercs2_mp_api::ApiError` JSON body.
-pub struct HttpError(StatusCode, ApiError);
+/// An error response: HTTP status plus the `mercs2_mp_api::ApiError` JSON body, and the `WWW-Authenticate`
+/// challenge of a 401 from a bearer-token route.
+pub struct HttpError(StatusCode, ApiError, Option<&'static str>);
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
-        (self.0, axum::Json(self.1)).into_response()
+        let mut rsp = (self.0, axum::Json(self.1)).into_response();
+        if let Some(challenge) = self.2 {
+            rsp.headers_mut().insert(http::header::WWW_AUTHENTICATE, HeaderValue::from_static(challenge));
+        }
+        rsp
     }
 }
 
 impl From<ApiError> for HttpError {
     fn from(err: ApiError) -> HttpError {
-        HttpError(status_of(err.code), err)
+        HttpError(status_of(err.code), err, None)
     }
 }
 
 fn error(status: StatusCode, err: ApiError) -> HttpError {
-    HttpError(status, err)
+    HttpError(status, err, None)
 }
 
+/// The detail goes to the server log only; the client gets a fixed body.
 fn internal(context: &str, e: &dyn std::fmt::Display) -> HttpError {
     tracing::error!(error = %e, "{context}");
-    ApiError::new(ErrorCode::Internal, format!("{context}: {e}")).into()
+    ApiError::new(ErrorCode::Internal, "internal error").into()
+}
+
+/// 401 `unauthorized` for a bearer-token route, with the RFC 6750 section 3 `WWW-Authenticate` challenge.
+fn unauthorized(message: &str, challenge: &'static str) -> HttpError {
+    HttpError(StatusCode::UNAUTHORIZED, ApiError::new(ErrorCode::Unauthorized, message), Some(challenge))
 }
 
 fn db_failure(e: DbError) -> HttpError {
@@ -185,17 +197,35 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// The live session named by the request's bearer token. Read-only: the session row is not modified.
 async fn authenticate(app: &App, headers: &HeaderMap) -> Result<SessionRow, HttpError> {
     let Some(token) = bearer(headers) else {
-        return Err(ApiError::new(ErrorCode::Unauthorized, "Authorization: Bearer <session token> required").into());
+        return Err(unauthorized("Authorization: Bearer <session token> required", "Bearer"));
     };
     match app.db.session(&sha256(token.as_bytes()), now_unix()).await.map_err(db_failure)? {
         Some(s) => Ok(s),
-        None => Err(ApiError::new(ErrorCode::Unauthorized, "session token unknown or expired").into()),
+        None => Err(unauthorized("session token unknown or expired", r#"Bearer error="invalid_token""#)),
     }
 }
 
-async fn current_session(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, HttpError> {
-    let session = authenticate(&app, &headers).await?;
-    Ok(axum::Json(CurrentSession { account_id: session.user.user_id, username: session.user.name }).into_response())
+async fn current_session(
+    State(app): State<Arc<App>>,
+    Extension(peer): Extension<Peer>,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    let verified = async {
+        admit(&app, &app.current_session_limit, peer, &headers)?;
+        authenticate(&app, &headers).await
+    }
+    .await;
+    // Logs the outcome only: never the Authorization header or any part of the token.
+    let session = match verified {
+        Ok(session) => session,
+        Err(e) => {
+            tracing::info!(code = ?e.1.code, error = %e.1.message, "session verification refused");
+            return Err(e);
+        }
+    };
+    tracing::info!(user = session.user.user_id.0, "session verified");
+    let body = CurrentSession { account_id: session.user.user_id, username: session.user.name };
+    Ok(([(http::header::CACHE_CONTROL, HeaderValue::from_static("no-store"))], axum::Json(body)).into_response())
 }
 
 async fn websocket(
