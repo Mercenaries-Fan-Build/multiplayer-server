@@ -86,10 +86,14 @@ fn error(status: StatusCode, err: ApiError) -> HttpError {
     HttpError(status, err, None)
 }
 
+/// The only message an `internal` error carries to a client, over REST and the WebSocket alike; the detail goes
+/// to the server log.
+pub const INTERNAL_ERROR_MESSAGE: &str = "internal error";
+
 /// The detail goes to the server log only; the client gets a fixed body.
 fn internal(context: &str, e: &dyn std::fmt::Display) -> HttpError {
     tracing::error!(error = %e, "{context}");
-    ApiError::new(ErrorCode::Internal, "internal error").into()
+    ApiError::new(ErrorCode::Internal, INTERNAL_ERROR_MESSAGE).into()
 }
 
 /// 401 `unauthorized` for a bearer-token route, with the RFC 6750 section 3 `WWW-Authenticate` challenge.
@@ -185,7 +189,8 @@ async fn create_session(
         .await
         .map_err(db_failure)?;
     tracing::info!(user = user.id.0, build = %req.client.build_sha256, asi = %req.client.asi_version, "session created");
-    Ok(axum::Json(SessionCreated { token, user_id: user.id, display_name: user.username, expires_at }).into_response())
+    let body = SessionCreated { token, user_id: user.id, display_name: user.username, expires_at };
+    Ok(([(http::header::CACHE_CONTROL, HeaderValue::from_static("no-store"))], axum::Json(body)).into_response())
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
